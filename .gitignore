@@ -1,0 +1,32 @@
+# Secrets / local env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Dependencies & build
+node_modules/
+dist/
+.vite/
+
+# App runtime data
+data/
+uploads/
+*.sqlite
+*.sqlite-*
+
+# Logs & caches
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editor / agent tooling
+.idea/
+.vscode/
+.agents/
+.claude/
+.codex/
+.playwright-cli/
+work/
+outputs/

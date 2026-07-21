@@ -1,0 +1,40 @@
+{
+  "name": "googlemap-google-map",
+  "version": "1.0.0",
+  "description": "A high-fidelity Google My Maps-style custom map editor with an SQLite admin console.",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 0.0.0.0\" \"node --watch server/index.js\"",
+    "dev:client": "vite --host 0.0.0.0",
+    "dev:server": "node --watch server/index.js",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "check": "eslint src server",
+    "test": "node --test --test-concurrency=1 server/*.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@amap/amap-jsapi-loader": "^1.0.1",
+    "@tmcw/togeojson": "^7.1.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "file-type": "^22.0.1",
+    "lucide-react": "^1.24.0",
+    "multer": "^2.2.0",
+    "papaparse": "^5.5.4",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^10.0.3",
+    "eslint": "^10.7.0",
+    "globals": "^17.7.0",
+    "vite": "^8.1.4"
+  }
+}
