@@ -61,6 +61,8 @@ export const en = {
     noProjectsHint: 'Create a project first, then add maps, layers, and features.',
     allProjects: 'All projects',
     allProjectsDesc: 'Browse maps across every project',
+    projectsFolder: 'Projects folder',
+    projectsFolderHint: 'Click a folder to open that project.',
     projectType: 'Project',
     workspaceType: 'Workspace',
     current: 'Current',

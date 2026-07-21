@@ -61,6 +61,8 @@ export const zh = {
     noProjectsHint: '先创建项目，再把地图、图层和要素组织到一起。',
     allProjects: '全部项目',
     allProjectsDesc: '跨项目查看全部地图',
+    projectsFolder: '项目文件夹',
+    projectsFolderHint: '点击文件夹打开对应项目。',
     projectType: '项目',
     workspaceType: '工作空间',
     current: '当前',

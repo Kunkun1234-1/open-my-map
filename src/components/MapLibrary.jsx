@@ -25,7 +25,7 @@ function ProjectCard({ project, active, isAll = false, onSelect, t }) {
   return (
     <button
       type="button"
-      className={`project-card${active ? ' active' : ''}${isAll ? ' all-projects' : ''}`}
+      className={`project-card project-card--sidebar${active ? ' active' : ''}${isAll ? ' all-projects' : ''}`}
       onClick={onSelect}
       role="tab"
       aria-selected={active}
@@ -91,9 +91,9 @@ function MapCard({ map, onOpen, onDelete, t }) {
   );
 }
 
-function MembersPanel({ project, canManage, onChanged, t }) {
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
+function MembersPanel({ project, members: initialMembers = [], canManage, onChanged, t }) {
+  const [members, setMembers] = useState(initialMembers);
+  const [loading, setLoading] = useState(initialMembers.length === 0);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState(null);
   const memberRoleLabel = {
@@ -213,6 +213,8 @@ export default function MapLibrary() {
   const [projectDialog, setProjectDialog] = useState(false);
   const [inviteDialog, setInviteDialog] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [projectMembers, setProjectMembers] = useState([]);
+  const [membersLoading, setMembersLoading] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', description: '' });
   const [inviteForm, setInviteForm] = useState({ email: '', role: 'editor' });
   const [dialogBusy, setDialogBusy] = useState(false);
@@ -261,6 +263,29 @@ export default function MapLibrary() {
     () => projects.find((project) => project.id === selectedProjectId) || null,
     [projects, selectedProjectId],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadProjectMembers = async () => {
+      if (!selectedProject || selectedProjectId === 'all') {
+        setProjectMembers([]);
+        setMembersLoading(false);
+        return;
+      }
+      setMembersLoading(true);
+      try {
+        const nextMembers = await api.projectMembers(selectedProject.id);
+        if (!cancelled) setProjectMembers(nextMembers);
+      } catch (requestError) {
+        if (!cancelled) setError(requestError.message);
+      } finally {
+        if (!cancelled) setMembersLoading(false);
+      }
+    };
+
+    loadProjectMembers();
+    return () => { cancelled = true; };
+  }, [selectedProject, selectedProjectId]);
 
   const canManageSelected = Boolean(
     selectedProject
@@ -355,135 +380,164 @@ export default function MapLibrary() {
 
   return (
     <main className="library-page">
-      <header className="library-header">
-        <button className="icon-button" aria-label={t('library.menu')}><Menu size={22} /></button>
-        <Brand label={t('library.homeAria')} />
-        <label className="library-search">
-          <Search size={20} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('library.searchPlaceholder')} aria-label={t('library.searchPlaceholder')} />
-        </label>
-        <LanguageSwitch className="library-lang-switch" />
-        <button className="icon-button apps-button" aria-label={t('library.apps')}><Grid3X3 size={20} /></button>
-        <button className="avatar-button" aria-label={t('library.account')} onClick={() => navigate('/me')} title={user?.displayName || user?.name || ''}>
-          {(user?.displayName || user?.name || '?').slice(0, 1)}
-        </button>
-      </header>
-
-      <div className="library-toolbar">
-        <div className="library-primary-actions">
-          <button className="create-map-button" onClick={createMap}><Plus size={18} /> {t('library.createMap')}</button>
-          <button className="secondary-button library-create-project" onClick={() => { setError(''); setProjectDialog(true); }}>
-            <Folder size={16} /> {t('library.createProject')}
-          </button>
-        </div>
-        <nav className="library-tabs" aria-label={t('library.searchPlaceholder')}>
-          {tabs.map(([key, label]) => (
-            <button key={key} className={activeTab === key ? 'active' : ''} onClick={() => setActiveTab(key)}>{label}</button>
-          ))}
-        </nav>
-        <div className="library-view-actions">
-          <button className="icon-button" onClick={() => setListMode((value) => !value)} aria-label={t('library.toggleList')}>
-            {listMode ? <Grid3X3 size={19} /> : <List size={19} />}
-          </button>
-          <button className="icon-button" aria-label={t('library.sort')}><SortAsc size={19} /></button>
-          {user?.role === 'admin' ? (
-            <button className="admin-link" onClick={() => navigate('/admin')}><Shield size={17} /> {t('library.admin')}</button>
-          ) : null}
-        </div>
-      </div>
-
-      <section className="library-content">
-        <div className="library-heading-row project-heading-row">
-          <div>
-            <span className="library-eyebrow">{t('library.workspace')}</span>
-            <h1>{t('library.myProjects')}</h1>
-            <p>{t('library.myProjectsHint')}</p>
-          </div>
-          <span className="project-count">{t('library.projectCount', { n: projects.length })}</span>
-        </div>
-        {error ? <div className="inline-error">{error}</div> : null}
-        {loading ? <div className="loading-state">{t('common.loading')}</div> : null}
-        {!loading && projects.length === 0 ? (
-          <div className="empty-projects">
-            <Folder size={30} />
-            <div><strong>{t('library.noProjectsTitle')}</strong><span>{t('library.noProjectsHint')}</span></div>
-            <button className="primary-button" onClick={() => setProjectDialog(true)}><Plus size={16} /> {t('library.createProject')}</button>
-          </div>
-        ) : null}
-        {!loading && projects.length > 0 ? (
-          <div className="project-grid" role="tablist" aria-label={t('library.myProjects')}>
-            <ProjectCard project={projectSummary} active={selectedProjectId === 'all'} isAll onSelect={() => { setSelectedProjectId('all'); setMembersOpen(false); }} t={t} />
-            {projects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                active={selectedProjectId === project.id}
-                onSelect={() => { setSelectedProjectId(project.id); setMembersOpen(true); }}
-                t={t}
-              />
-            ))}
-          </div>
-        ) : null}
-
-        {selectedProject && membersOpen ? (
-          <MembersPanel project={selectedProject} canManage={canManageSelected} onChanged={loadLibrary} t={t} />
-        ) : null}
-
-        {!loading ? (
-          <div className="project-map-heading">
-            <div>
-              <span className="project-map-path">
-                <Folder size={13} /> {selectedProject?.name || t('library.allProjects')} <ChevronRight size={13} /> {t('library.maps')}
+      <div className="library-shell">
+        <aside className="library-sidebar">
+          <Brand label={t('library.homeAria')} />
+          <label className="library-search library-search--sidebar">
+            <Search size={20} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('library.searchPlaceholder')} aria-label={t('library.searchPlaceholder')} />
+          </label>
+          <nav className="library-project-rail" aria-label={t('library.projectsFolder')}>
+            <button
+              type="button"
+              className="project-card project-card--sidebar all-projects workspace-parent-card"
+              onClick={() => {
+                setSelectedProjectId('all');
+                setMembersOpen(false);
+              }}
+              role="tab"
+              aria-selected={selectedProjectId === 'all'}
+              data-testid="project-filter-all"
+            >
+              <span className="project-card-topline">
+                <span className="project-card-icon"><Folder size={20} /></span>
+                <span className="project-card-type">{t('library.workspaceType')}</span>
+                {selectedProjectId === 'all' ? <span className="project-card-current">{t('library.current')}</span> : <ChevronRight className="project-card-arrow" size={17} />}
               </span>
-              <h2>{selectedProject ? t('library.projectMaps') : t('library.allMaps')}</h2>
+              <strong title={projectSummary.name}>{projectSummary.name}</strong>
+              <span className="project-card-description">{projectSummary.description}</span>
+              <span className="project-card-stats" aria-label={`${projectSummary.map_count} ${t('library.maps')}, ${projectSummary.layer_count} ${t('library.layers')}, ${projectSummary.feature_count} ${t('library.features')}`}>
+                <span><MapIcon size={13} /> {projectSummary.map_count} {t('library.maps')}</span>
+                <span><Layers size={13} /> {projectSummary.layer_count} {t('library.layers')}</span>
+                <span><MapPin size={13} /> {projectSummary.feature_count} {t('library.features')}</span>
+              </span>
+            </button>
+
+            {!loading && projects.length > 0 ? (
+              <div className="workspace-project-list" role="tablist" aria-label={t('library.myProjects')}>
+                {projects.map((project) => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    active={selectedProjectId === project.id}
+                    onSelect={() => {
+                      setSelectedProjectId(project.id);
+                      setMembersOpen(true);
+                    }}
+                    t={t}
+                  />
+                ))}
+              </div>
+            ) : !loading && projects.length === 0 ? (
+              <div className="empty-projects empty-projects--sidebar">
+                <Folder size={24} />
+                <div>
+                  <strong>{t('library.noProjectsTitle')}</strong>
+                  <span>{t('library.noProjectsHint')}</span>
+                </div>
+              </div>
+          ) : null}
+          </nav>
+          <button
+            type="button"
+            className="library-profile-footer"
+            onClick={() => navigate('/me')}
+            aria-label={t('library.account')}
+            title={user?.displayName || user?.name || ''}
+          >
+            <span className="library-profile-avatar" aria-hidden="true">
+              {(user?.displayName || user?.name || '?').slice(0, 1)}
+            </span>
+            <span className="library-profile-meta">
+              <strong>{user?.displayName || user?.name || t('library.account')}</strong>
+              <small>{t('library.account')}</small>
+            </span>
+          </button>
+        </aside>
+
+        <section className="library-content">
+          <div className="library-toolbar">
+            <nav className="library-tabs" aria-label={t('library.searchPlaceholder')}>
+              {tabs.map(([key, label]) => (
+                <button key={key} className={activeTab === key ? 'active' : ''} onClick={() => setActiveTab(key)}>{label}</button>
+              ))}
+            </nav>
+            <div className="library-view-actions">
+              <LanguageSwitch className="library-lang-switch" />
+              <button className="icon-button" onClick={() => setListMode((value) => !value)} aria-label={t('library.toggleList')}>
+                {listMode ? <Grid3X3 size={19} /> : <List size={19} />}
+              </button>
+              <button className="icon-button" aria-label={t('library.sort')}><SortAsc size={19} /></button>
+              {user?.role === 'admin' ? (
+                <button className="admin-link" onClick={() => navigate('/admin')}><Shield size={17} /> {t('library.admin')}</button>
+              ) : null}
+            </div>
+          </div>
+
+          {error ? <div className="inline-error">{error}</div> : null}
+          {loading ? <div className="loading-state">{t('common.loading')}</div> : null}
+
+          {!loading ? (
+            <div className="project-map-heading">
+              <div>
+                <span className="project-map-path">
+                  <Folder size={13} /> {selectedProject?.name || t('library.allProjects')} <ChevronRight size={13} /> {t('library.maps')}
+                </span>
+                <h2>{selectedProject ? t('library.projectMaps') : t('library.allMaps')}</h2>
+                <p>
+                  {selectedProject
+                    ? selectedProject.description || t('library.managedByOwner', { name: selectedProject.owner_name || t('library.roleOwner') })
+                    : t('library.selectProjectHint')}
+                </p>
+              </div>
+              <div className="project-map-actions">
+                {canManageSelected ? (
+                  <>
+                    <button className="secondary-button" onClick={() => setMembersOpen((value) => !value)}>
+                      <Users size={16} /> {membersOpen ? t('library.collapseMembers') : t('library.manageMembers')}
+                    </button>
+                    <button className="secondary-button" onClick={() => { setError(''); setInviteDialog(true); }}>
+                      <Users size={16} /> {t('library.inviteMembers')}
+                    </button>
+                  </>
+                ) : selectedProject ? (
+                  <button className="secondary-button" onClick={() => setMembersOpen((value) => !value)}>
+                    <Users size={16} /> {membersOpen ? t('library.collapseMembers') : t('library.viewMembers')}
+                  </button>
+                ) : null}
+                <span className="map-count">{t('library.mapCount', { n: filtered.length })}</span>
+              </div>
+            </div>
+          ) : null}
+
+          {selectedProject && membersOpen ? (
+            <MembersPanel project={selectedProject} members={projectMembers} canManage={canManageSelected} onChanged={loadLibrary} t={t} />
+          ) : null}
+
+          {!loading && filtered.length === 0 ? (
+            <div className="empty-library">
+              <Users size={36} />
+              <h2>{t('library.noMatchTitle')}</h2>
               <p>
                 {selectedProject
-                  ? selectedProject.description || t('library.managedByOwner', { name: selectedProject.owner_name || t('library.roleOwner') })
-                  : t('library.selectProjectHint')}
+                  ? t('library.noMatchInProject', { name: selectedProject.name })
+                  : projects.length
+                    ? t('library.noMatchSearch')
+                    : t('library.createProjectFirst')}
               </p>
+              <button className="primary-button" onClick={projects.length ? createMap : () => setProjectDialog(true)}>
+                {projects.length ? t('library.createMap') : t('library.createProject')}
+              </button>
             </div>
-            <div className="project-map-actions">
-              {canManageSelected ? (
-                <>
-                  <button className="secondary-button" onClick={() => setMembersOpen((value) => !value)}>
-                    <Users size={16} /> {membersOpen ? t('library.collapseMembers') : t('library.manageMembers')}
-                  </button>
-                  <button className="secondary-button" onClick={() => { setError(''); setInviteDialog(true); }}>
-                    <Users size={16} /> {t('library.inviteMembers')}
-                  </button>
-                </>
-              ) : selectedProject ? (
-                <button className="secondary-button" onClick={() => setMembersOpen((value) => !value)}>
-                  <Users size={16} /> {membersOpen ? t('library.collapseMembers') : t('library.viewMembers')}
-                </button>
-              ) : null}
-              <span className="map-count">{t('library.mapCount', { n: filtered.length })}</span>
+          ) : (
+            <div className={listMode ? 'map-grid list-mode' : 'map-grid'}>
+              {filtered.map((map) => (
+                <MapCard key={map.id} map={map} onOpen={() => navigate(`/maps/${map.id}`)} onDelete={() => deleteMap(map)} t={t} />
+              ))}
             </div>
-          </div>
-        ) : null}
-        {!loading && filtered.length === 0 ? (
-          <div className="empty-library">
-            <Users size={36} />
-            <h2>{t('library.noMatchTitle')}</h2>
-            <p>
-              {selectedProject
-                ? t('library.noMatchInProject', { name: selectedProject.name })
-                : projects.length
-                  ? t('library.noMatchSearch')
-                  : t('library.createProjectFirst')}
-            </p>
-            <button className="primary-button" onClick={projects.length ? createMap : () => setProjectDialog(true)}>
-              {projects.length ? t('library.createMap') : t('library.createProject')}
-            </button>
-          </div>
-        ) : (
-          <div className={listMode ? 'map-grid list-mode' : 'map-grid'}>
-            {filtered.map((map) => (
-              <MapCard key={map.id} map={map} onOpen={() => navigate(`/maps/${map.id}`)} onDelete={() => deleteMap(map)} t={t} />
-            ))}
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      </div>
       <footer className="library-footer">{t('library.footer', { provider: AMAP_PROVIDER })}</footer>
 
       {projectDialog ? (
