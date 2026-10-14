@@ -250,7 +250,7 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
     // the left drawer or the mobile details sheet.
     const pixel = map.lngLatToContainer?.(position);
     if (pixel && map.containerToLngLat) {
-      const adjusted = new AMap.Pixel(pixel.x - (padding[3] - padding[1]) / 2, pixel.y - (padding[0] - padding[2]) / 2);
+      const adjusted = new AMap.Pixel(pixel.x - (padding[2] - padding[3]) / 2, pixel.y - (padding[0] - padding[1]) / 2);
       map.setCenter(map.containerToLngLat(adjusted), immediately, duration);
     } else map.setCenter(position, immediately, duration);
   };
@@ -313,7 +313,20 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
         if (lat > maxLat) maxLat = lat;
       }
       const bounds = new AMap.Bounds(new AMap.LngLat(minLng, minLat), new AMap.LngLat(maxLng, maxLat));
-      map.setBounds(bounds, Boolean(reducedMotion()), viewportPadding(map.getContainer()), maxZoom);
+      const padding = viewportPadding(map.getContainer());
+      // setBounds accepts only bounds, immediately, and avoidance. Its fourth
+      // argument does not enforce maxZoom in the real JSAPI 2.0 SDK.
+      if (map.getFitZoomAndCenterByBounds) {
+        const [fitZoom, center] = map.getFitZoomAndCenterByBounds(bounds, padding, maxZoom);
+        const { immediately, duration } = motion();
+        map.setZoomAndCenter(Math.max(AMAP_MIN_ZOOM, Math.min(AMAP_MAX_ZOOM, maxZoom, fitZoom)), center, immediately, duration);
+      } else {
+        // Older SDKs expose the equivalent maxZoom argument on setFitView.
+        const helper = new AMap.Polyline({ path: [bounds.getSouthWest?.() || [minLng, minLat], bounds.getNorthEast?.() || [maxLng, maxLat]], strokeOpacity: 0, bubble: true });
+        map.add(helper);
+        map.setFitView([helper], Boolean(reducedMotion()), padding, maxZoom);
+        map.remove(helper);
+      }
       reportZoom();
     },
     focusFeature(featureId) {
@@ -351,23 +364,29 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
 
 function createBaseLayerSet(AMap, baseMapKey) {
   const satelliteVisible = getBaseMapConfig(baseMapKey).layerType === 'satellite';
-  const defaultLayer = AMap.createDefaultLayer({ visible: !satelliteVisible });
-  const satelliteLayer = new AMap.TileLayer.Satellite({ visible: satelliteVisible });
-  const roadNetLayer = new AMap.TileLayer.RoadNet({ visible: satelliteVisible });
+  const defaultLayer = AMap.createDefaultLayer();
+  const satelliteLayer = new AMap.TileLayer.Satellite();
+  const roadNetLayer = new AMap.TileLayer.RoadNet();
   return {
     all: [defaultLayer, satelliteLayer, roadNetLayer],
+    active: satelliteVisible ? [satelliteLayer, roadNetLayer] : [defaultLayer],
+    primary: satelliteVisible ? satelliteLayer : defaultLayer,
     defaultLayer,
     satelliteLayer,
     roadNetLayer,
   };
 }
 
-function showBaseLayerSet(layerSet, baseMapKey) {
+function showBaseLayerSet(map, layerSet, baseMapKey) {
   if (!layerSet) return;
   const satelliteVisible = getBaseMapConfig(baseMapKey).layerType === 'satellite';
-  layerSet.defaultLayer[satelliteVisible ? 'hide' : 'show']();
-  layerSet.satelliteLayer[satelliteVisible ? 'show' : 'hide']();
-  layerSet.roadNetLayer[satelliteVisible ? 'show' : 'hide']();
+  const next = satelliteVisible ? [layerSet.satelliteLayer, layerSet.roadNetLayer] : [layerSet.defaultLayer];
+  const remove = layerSet.active.filter((layer) => !next.includes(layer));
+  const add = next.filter((layer) => !layerSet.active.includes(layer));
+  if (remove.length) map.remove(remove);
+  if (add.length) map.add(add);
+  layerSet.active = next;
+  layerSet.primary = satelliteVisible ? layerSet.satelliteLayer : layerSet.defaultLayer;
 }
 
 export default function AmapMap({
@@ -418,6 +437,7 @@ export default function AmapMap({
   const appliedBaseMapKeyRef = useRef(null);
   const controllerRef = useRef(null);
   const trafficLayerRef = useRef(null);
+  const trafficAttachedRef = useRef(false);
   const editorRef = useRef(null);
   const editingIdRef = useRef(null);
   const dragListenersRef = useRef([]);
@@ -477,6 +497,9 @@ export default function AmapMap({
     let pressTimer;
     let pressOrigin = null;
     let pressHandled = false;
+    let baseLayerCompleted = false;
+    let markReady = null;
+    let readyNotified = false;
     const touchPointers = new Set();
     let suppressClickUntil = 0;
     let viewSource = 'programmatic';
@@ -515,14 +538,18 @@ export default function AmapMap({
         isHotspot: true,
       };
       const baseLayers = createBaseLayerSet(AMap, currentData.base_map);
-      options.layers = baseLayers.all;
+      // AMap 2.0 waits forever for Map.complete when non-visible satellite or
+      // road layers are attached. Only attach the currently visible base set.
+      options.layers = baseLayers.active;
+      const onBaseComplete = () => {
+        baseLayerCompleted = true;
+        markReady?.();
+      };
+      baseLayers.primary.on?.('complete', onBaseComplete);
       const map = new AMap.Map(surfaceRef.current, options);
       mapRef.current = map;
       baseLayersRef.current = baseLayers;
-      const trafficLayer = new AMap.TileLayer.Traffic({ zIndex: 12 });
-      trafficLayerRef.current = trafficLayer;
-      map.add(trafficLayer);
-      trafficLayer.hide();
+      trafficAttachedRef.current = false;
       appliedBaseMapKeyRef.current = normalizeBaseMapKey(currentData.base_map);
 
       const tooltipElement = document.createElement('div');
@@ -583,15 +610,18 @@ export default function AmapMap({
       };
       controllerRef.current = buildController(AMap, map, overlayRegistryRef, reportZoom, { beforeMove: () => { viewSource = 'programmatic'; } });
 
-      map.on('complete', () => {
-        if (disposed) return;
+      markReady = () => {
+        if (disposed || readyNotified) return;
+        readyNotified = true;
         window.clearTimeout(loadTimeout);
         shell.dataset.amapStatus = 'ready';
         setStatus('ready');
         reportZoom();
         callbacksRef.current.onReady?.(controllerRef.current);
         reportView();
-      });
+      };
+      map.on('complete', markReady);
+      if (baseLayerCompleted) markReady();
       map.on('zoomend', () => { reportZoom(); reportView(); });
       map.on('moveend', () => { callbacksRef.current.onMoveEnd?.(controllerRef.current.getCenter(), map.getZoom()); reportView(); });
       map.on('dragstart', () => { viewSource = 'user'; });
@@ -713,6 +743,7 @@ export default function AmapMap({
       mapRef.current?.destroy();
       mapRef.current = null;
       trafficLayerRef.current = null;
+      trafficAttachedRef.current = false;
       baseLayersRef.current = null;
       appliedBaseMapKeyRef.current = null;
       controllerRef.current = null;
@@ -739,8 +770,15 @@ export default function AmapMap({
   }, []);
 
   useEffect(() => {
-    if (!ready) return;
-    trafficLayerRef.current?.[trafficVisible ? 'show' : 'hide']();
+    if (!ready || !mapRef.current || !amapRef.current) return;
+    if (trafficVisible && !trafficAttachedRef.current) {
+      trafficLayerRef.current ||= new amapRef.current.TileLayer.Traffic({ zIndex: 12 });
+      mapRef.current.add(trafficLayerRef.current);
+      trafficAttachedRef.current = true;
+    } else if (!trafficVisible && trafficAttachedRef.current) {
+      mapRef.current.remove(trafficLayerRef.current);
+      trafficAttachedRef.current = false;
+    }
   }, [ready, trafficVisible]);
 
   const baseMapKey = normalizeBaseMapKey(mapData.base_map);
@@ -750,10 +788,9 @@ export default function AmapMap({
 
     const config = getBaseMapConfig(baseMapKey);
     mapRef.current.setMapStyle(config.mapStyle);
-    // All three official layers are attached during map construction. Toggling
-    // their visibility preserves AMap's internal road/POI label resources;
-    // setLayers() or late add/remove calls drop those labels in JS API 2.0.
-    showBaseLayerSet(baseLayersRef.current, baseMapKey);
+    // Preserve Map's native vector resources while replacing only the active
+    // raster/satellite base layers; do not reset all map layers with setLayers.
+    showBaseLayerSet(mapRef.current, baseLayersRef.current, baseMapKey);
     appliedBaseMapKeyRef.current = baseMapKey;
   }, [baseMapKey, ready]);
 

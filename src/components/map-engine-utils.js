@@ -120,9 +120,9 @@ export function safeStorageBounds(rawBounds, toStorageLngLat) {
   }
 }
 
-/** Fit-view padding in SDK order: top, right, bottom, left. */
+/** AMap fit-view avoidance order: top, bottom, left, right (not CSS order). */
 export function viewportPadding(container) {
-  const padding = [40, 60, 40, 40];
+  const padding = [40, 40, 40, 60];
   if (!container || typeof container.getBoundingClientRect !== 'function') return padding;
   const mapRect = container.getBoundingClientRect();
   const width = mapRect.width ?? mapRect.right - mapRect.left;
@@ -150,10 +150,10 @@ export function viewportPadding(container) {
     const mobile = width <= 760;
     const bottomSheet = mobile && right - left >= width * 0.65
       && top > mapRect.top + height * 0.2 && panelRect.bottom >= mapRect.bottom - 40;
-    if (bottomSheet) padding[2] = Math.max(padding[2], mapRect.bottom - top + gap);
-    else if (left <= mapRect.left + 40) padding[3] = Math.max(padding[3], right - mapRect.left + gap);
+    if (bottomSheet) padding[1] = Math.max(padding[1], mapRect.bottom - top + gap);
+    else if (left <= mapRect.left + 40) padding[2] = Math.max(padding[2], right - mapRect.left + gap);
   }
-  padding[2] = Math.min(padding[2], Math.max(40, height - padding[0] - 60));
-  padding[3] = Math.min(padding[3], Math.max(40, width - padding[1] - 60));
+  padding[1] = Math.min(padding[1], Math.max(40, height - padding[0] - 60));
+  padding[2] = Math.min(padding[2], Math.max(40, width - padding[3] - 60));
   return padding.map(Math.ceil);
 }
