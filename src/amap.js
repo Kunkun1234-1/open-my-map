@@ -96,3 +96,91 @@ export function toDisplayLngLat(lngValue, latValue) {
 export function toStorageLngLat(lngValue, latValue) {
   return gcj02ToWgs84(lngValue, latValue);
 }
+
+const servicePromises = new Map();
+
+async function mapService(pluginName) {
+  const AMap = await loadAMap();
+  if (!servicePromises.has(pluginName)) {
+    servicePromises.set(pluginName, new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        servicePromises.delete(pluginName);
+        reject(new Error('地图服务加载超时，请检查网络与高德 Key 配置。'));
+      }, 12_000);
+      AMap.plugin(`AMap.${pluginName}`, () => {
+        window.clearTimeout(timeout);
+        if (!AMap[pluginName]) {
+          servicePromises.delete(pluginName);
+          reject(new Error('地图服务暂不可用。'));
+          return;
+        }
+        resolve(AMap);
+      });
+    }));
+  }
+  return servicePromises.get(pluginName);
+}
+
+function storagePosition(position) {
+  if (!position) return null;
+  const lng = Number(position.getLng?.() ?? position.lng);
+  const lat = Number(position.getLat?.() ?? position.lat);
+  return Number.isFinite(lng) && Number.isFinite(lat) ? toStorageLngLat(lng, lat) : null;
+}
+
+function poiResult(poi, index) {
+  return {
+    id: `amap-${poi.id || `${poi.name}-${index}`}`,
+    name: poi.name || '',
+    address: [poi.pname, poi.cityname, poi.adname, typeof poi.address === 'string' ? poi.address : ''].filter(Boolean).join(' '),
+    position: storagePosition(poi.location),
+    type: poi.type || '',
+    city: poi.adcode || poi.cityname || '',
+    index: index + 1,
+  };
+}
+
+function searchService(service, query, resultKey) {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error('地图搜索超时，请稍后重试。')), 12_000);
+    service.search(query, (status, result) => {
+      window.clearTimeout(timeout);
+      if (status === 'no_data') { resolve([]); return; }
+      if (status !== 'complete') { reject(new Error(result?.info || '地图搜索暂不可用，请检查服务权限。')); return; }
+      const rows = resultKey === 'tips' ? result.tips : result.poiList?.pois;
+      resolve((rows || []).map(poiResult));
+    });
+  });
+}
+
+export async function suggestAMapPlaces(query) {
+  if (!query.trim()) return [];
+  const AMap = await mapService('AutoComplete');
+  return searchService(new AMap.AutoComplete({ datatype: 'all' }), query, 'tips');
+}
+
+export async function searchAMapPlaces(query) {
+  const AMap = await mapService('PlaceSearch');
+  const rows = await searchService(new AMap.PlaceSearch({ pageSize: 10, extensions: 'base' }), query, 'pois');
+  return rows.filter((row) => row.position).map((row, index) => ({ ...row, index: index + 1 }));
+}
+
+export async function routeAMap(points, travelMode = 'driving') {
+  const pluginName = travelMode === 'walking' ? 'Walking' : travelMode === 'cycling' ? 'Riding' : 'Driving';
+  const AMap = await mapService(pluginName);
+  const positions = points.map(([lng, lat]) => toDisplayLngLat(lng, lat));
+  const service = new AMap[pluginName]({ hideMarkers: true });
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error('路线规划超时，请稍后重试。')), 15_000);
+    service.search(positions[0], positions[1], (status, result) => {
+      window.clearTimeout(timeout);
+      const route = (result?.routes || result?.rides)?.[0];
+      const coordinates = (route?.steps || []).flatMap((step) => (step.path || []).map(storagePosition)).filter(Boolean);
+      if (status !== 'complete' || coordinates.length < 2) {
+        reject(new Error(result?.info || '暂未找到可用路线，请调整起点或终点。'));
+        return;
+      }
+      resolve({ geometry: { type: 'LineString', coordinates }, distance: route.distance, duration: route.time });
+    });
+  });
+}

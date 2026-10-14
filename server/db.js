@@ -127,6 +127,13 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS map_favorites (
+    map_id INTEGER NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (map_id, user_id)
+  );
+
   CREATE TABLE IF NOT EXISTS import_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     map_id INTEGER NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
@@ -157,6 +164,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_wechat_user_id ON wechat_accounts(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_map_favorites_user_id ON map_favorites(user_id);
 `);
 
 // 旧库迁移：为 users 补充新列（CREATE TABLE IF NOT EXISTS 不会改动已存在的表）。
@@ -178,8 +186,12 @@ if (!mapColumns.some((column) => column.name === 'project_id')) {
 if (!mapColumns.some((column) => column.name === 'created_by_user_id')) {
   db.exec('ALTER TABLE maps ADD COLUMN created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
 }
+if (!mapColumns.some((column) => column.name === 'deleted_at')) {
+  db.exec('ALTER TABLE maps ADD COLUMN deleted_at TEXT');
+}
 db.exec('CREATE INDEX IF NOT EXISTS idx_maps_project_id ON maps(project_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_maps_created_by ON maps(created_by_user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_maps_deleted_at ON maps(deleted_at)');
 
 function ensureVersionColumn(table) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
@@ -329,6 +341,7 @@ export function listMaps() {
       (SELECT COUNT(*) FROM features f JOIN layers l ON l.id = f.layer_id WHERE l.map_id = m.id) AS feature_count
     FROM maps m
     LEFT JOIN projects p ON p.id = m.project_id
+    WHERE m.deleted_at IS NULL
     ORDER BY m.updated_at DESC
   `).all();
 }
@@ -337,7 +350,7 @@ export function getMap(id) {
   const map = db.prepare(`
     SELECT m.*, p.name AS project_name
     FROM maps m LEFT JOIN projects p ON p.id = m.project_id
-    WHERE m.id = ?
+    WHERE m.id = ? AND m.deleted_at IS NULL
   `).get(id);
   if (!map) return null;
   const layers = db.prepare('SELECT * FROM layers WHERE map_id = ? ORDER BY position, id').all(id);
@@ -388,17 +401,22 @@ export function getPublicMap(token) {
 
 export function adminStats() {
   const count = (table) => Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
-  const byType = db.prepare('SELECT type, COUNT(*) AS count FROM features GROUP BY type').all();
-  const byVisibility = db.prepare('SELECT visibility, COUNT(*) AS count FROM maps GROUP BY visibility').all();
+  const activeCount = (from) => Number(db.prepare(`SELECT COUNT(*) AS count FROM ${from} WHERE m.deleted_at IS NULL`).get().count);
+  const byType = db.prepare(`
+    SELECT f.type, COUNT(*) AS count FROM features f
+    JOIN layers l ON l.id = f.layer_id JOIN maps m ON m.id = l.map_id
+    WHERE m.deleted_at IS NULL GROUP BY f.type
+  `).all();
+  const byVisibility = db.prepare('SELECT visibility, COUNT(*) AS count FROM maps WHERE deleted_at IS NULL GROUP BY visibility').all();
   return {
-    maps: count('maps'),
-    layers: count('layers'),
-    features: count('features'),
-    attachments: count('attachments'),
+    maps: activeCount('maps m'),
+    layers: activeCount('layers l JOIN maps m ON m.id = l.map_id'),
+    features: activeCount('features f JOIN layers l ON l.id = f.layer_id JOIN maps m ON m.id = l.map_id'),
+    attachments: activeCount('attachments a JOIN features f ON f.id = a.feature_id JOIN layers l ON l.id = f.layer_id JOIN maps m ON m.id = l.map_id'),
     users: count('users'),
     projects: count('projects'),
-    imports: count('import_jobs'),
-    shares: count('shares'),
+    imports: activeCount('import_jobs i JOIN maps m ON m.id = i.map_id'),
+    shares: activeCount('shares s JOIN maps m ON m.id = s.map_id'),
     byType,
     byVisibility,
     dbPath,
@@ -408,11 +426,11 @@ export function adminStats() {
 export function listProjects() {
   return db.prepare(`
     SELECT p.id, p.name, p.description, p.owner_user_id, p.status, p.created_at,
-      COALESCE((SELECT MAX(m.updated_at) FROM maps m WHERE m.project_id = p.id), p.updated_at) AS updated_at,
+      COALESCE((SELECT MAX(m.updated_at) FROM maps m WHERE m.project_id = p.id AND m.deleted_at IS NULL), p.updated_at) AS updated_at,
       u.name AS owner_name, u.email AS owner_email,
-      (SELECT COUNT(*) FROM maps m WHERE m.project_id = p.id) AS map_count,
-      (SELECT COUNT(*) FROM layers l JOIN maps m ON m.id = l.map_id WHERE m.project_id = p.id) AS layer_count,
-      (SELECT COUNT(*) FROM features f JOIN layers l ON l.id = f.layer_id JOIN maps m ON m.id = l.map_id WHERE m.project_id = p.id) AS feature_count,
+      (SELECT COUNT(*) FROM maps m WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS map_count,
+      (SELECT COUNT(*) FROM layers l JOIN maps m ON m.id = l.map_id WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS layer_count,
+      (SELECT COUNT(*) FROM features f JOIN layers l ON l.id = f.layer_id JOIN maps m ON m.id = l.map_id WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS feature_count,
       (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) AS member_count
     FROM projects p
     LEFT JOIN users u ON u.id = p.owner_user_id
@@ -439,7 +457,7 @@ export function listLibraryProjects() {
 }
 
 export function backupData() {
-  const tables = ['projects', 'project_members', 'maps', 'layers', 'features', 'attachments', 'users', 'wechat_accounts', 'sessions', 'shares', 'import_jobs', 'audit_logs'];
+  const tables = ['projects', 'project_members', 'maps', 'map_favorites', 'layers', 'features', 'attachments', 'users', 'wechat_accounts', 'sessions', 'shares', 'import_jobs', 'audit_logs'];
   return Object.fromEntries(tables.map((table) => [table, db.prepare(`SELECT * FROM ${table}`).all()]));
 }
 
@@ -721,6 +739,7 @@ export function membershipForProject(userId, projectId) {
 
 export function canEditMap(user, mapId) {
   if (!user) return false;
+  if (!db.prepare('SELECT 1 FROM maps WHERE id = ? AND deleted_at IS NULL').get(mapId)) return false;
   if (user.role === 'admin') return true;
   const membership = membershipForMap(user.id, mapId);
   return membership?.role === 'owner' || membership?.role === 'editor';
@@ -728,8 +747,15 @@ export function canEditMap(user, mapId) {
 
 export function canViewMap(user, mapId) {
   if (!user) return false;
+  if (!db.prepare('SELECT 1 FROM maps WHERE id = ? AND deleted_at IS NULL').get(mapId)) return false;
   if (user.role === 'admin') return true;
   return Boolean(membershipForMap(user.id, mapId));
+}
+
+export function canManageMap(user, mapId) {
+  if (!user) return false;
+  if (!db.prepare('SELECT 1 FROM maps WHERE id = ?').get(mapId)) return false;
+  return user.role === 'admin' || membershipForMap(user.id, mapId)?.role === 'owner';
 }
 
 export function canEditProject(user, projectId) {
@@ -760,28 +786,48 @@ export function listVisibleProjects(user) {
 }
 
 export function listVisibleMaps(user) {
+  return visibleMapRows(user, false);
+}
+
+export function listVisibleTrashMaps(user) {
+  return visibleMapRows(user, true);
+}
+
+function visibleMapRows(user, trashed) {
   if (!user) return [];
-  if (user.role === 'admin') {
-    return listMaps().map((map) => ({
-      ...map,
-      my_role: 'admin',
-      is_owner: true,
-    }));
-  }
   const rows = db.prepare(`
     SELECT m.*, p.name AS project_name, p.owner_user_id,
       pm.role AS my_role,
+      EXISTS(SELECT 1 FROM map_favorites mf WHERE mf.map_id = m.id AND mf.user_id = ?) AS is_favorite,
       (SELECT COUNT(*) FROM layers l WHERE l.map_id = m.id) AS layer_count,
       (SELECT COUNT(*) FROM features f JOIN layers l ON l.id = f.layer_id WHERE l.map_id = m.id) AS feature_count
     FROM maps m
     LEFT JOIN projects p ON p.id = m.project_id
-    JOIN project_members pm ON pm.project_id = m.project_id AND pm.user_id = ?
-    ORDER BY m.updated_at DESC
-  `).all(user.id);
+    LEFT JOIN project_members pm ON pm.project_id = m.project_id AND pm.user_id = ?
+    WHERE m.deleted_at IS ${trashed ? 'NOT ' : ''}NULL
+      AND (? = 'admin' OR ${trashed ? "pm.role = 'owner'" : 'pm.role IS NOT NULL'})
+    ORDER BY ${trashed ? 'm.deleted_at' : 'm.updated_at'} DESC, m.id DESC
+  `).all(user.id, user.id, user.role);
   return rows.map((map) => ({
     ...map,
-    is_owner: map.owner_user_id === user.id || map.my_role === 'owner',
+    my_role: user.role === 'admin' ? 'admin' : map.my_role,
+    is_owner: user.role === 'admin' || map.owner_user_id === user.id || map.my_role === 'owner',
+    is_favorite: Boolean(map.is_favorite),
   }));
+}
+
+export function setMapFavorite(user, mapId, favorite) {
+  if (!canViewMap(user, mapId)) {
+    const error = new Error('无权收藏该地图');
+    error.status = 403;
+    throw error;
+  }
+  if (favorite) {
+    db.prepare('INSERT OR IGNORE INTO map_favorites (map_id, user_id, created_at) VALUES (?, ?, ?)').run(mapId, user.id, iso());
+  } else {
+    db.prepare('DELETE FROM map_favorites WHERE map_id = ? AND user_id = ?').run(mapId, user.id);
+  }
+  return { id: mapId, is_favorite: favorite };
 }
 
 export function normalizeGlobalRole(role) {

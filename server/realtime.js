@@ -79,6 +79,16 @@ export function broadcastMapOp(mapId, op) {
     if (excludeSocket && socket === excludeSocket) continue;
     send(socket, payload);
   }
+  if (op.action === 'map.deleted') {
+    // 回收站保留数据，但该地图不再允许协作或发送实时位置。
+    for (const socket of room) {
+      socket.mapId = null;
+      socket.canEdit = false;
+      socket.presence = { tool: 'pan', selectedFeatureId: null, cursor: null };
+      send(socket, { type: 'left', mapId });
+    }
+    rooms.delete(roomKey(mapId));
+  }
 }
 
 export function createMapOp({ action, actor, entity = null, entityId = null, version = null, opId = null }) {

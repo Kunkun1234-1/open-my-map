@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Eye, Layers, Menu, Search, Share2, X } from 'lucide-react';
 import { api } from '../api.js';
 import { navigate } from '../App.jsx';
@@ -14,6 +14,7 @@ export default function PublicView({ token }) {
   const [query, setQuery] = useState('');
   const [visible, setVisible] = useState({});
   const [selectedContext, setSelectedContext] = useState(null);
+  const mapRef = useRef(null);
 
   useEffect(() => {
     api.publicMap(token).then((data) => {
@@ -58,7 +59,7 @@ export default function PublicView({ token }) {
         <div className="public-layers">
           {filteredLayers.map((layer) => <section key={layer.id}>
             <label><input type="checkbox" checked={Boolean(visible[layer.id])} onChange={() => setVisible((state) => ({ ...state, [layer.id]: !state[layer.id] }))} /><span className="layer-dot" style={{ background: layer.style.color || '#1a73e8' }} /><b>{layer.name}</b></label>
-            {visible[layer.id] ? layer.features.map((feature) => <p key={feature.id}>{feature.name}{feature.attachments?.length ? <span className="public-media-count">{feature.attachments.length}</span> : null}</p>) : null}
+            {visible[layer.id] ? layer.features.map((feature) => <button type="button" className={`public-feature-button${visibleSelectedContext?.feature.id === feature.id ? ' active' : ''}`} key={feature.id} onClick={() => { setSelectedContext({ feature, layer }); mapRef.current?.focusFeature(feature.id); }}>{feature.name}{feature.attachments?.length ? <span className="public-media-count">{feature.attachments.length}</span> : null}</button>) : null}
           </section>)}
         </div>
         <footer><Layers size={16} /> Open My Map</footer>
@@ -67,6 +68,7 @@ export default function PublicView({ token }) {
       <AmapMap
         className="public-map"
         mapData={renderedMapData}
+        onReady={(controller) => { mapRef.current = controller; }}
         onFeatureSelect={(feature, layer) => setSelectedContext({ feature, layer })}
         onMapClick={() => setSelectedContext(null)}
         popup={popup}

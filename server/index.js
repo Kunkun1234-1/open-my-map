@@ -11,7 +11,7 @@ import {
   db, getMap, getPublicMap, listMaps, listProjects, adminStats, backupData, audit, now,
   listVisibleMaps, listVisibleProjects, createProjectOwnedBy, inviteProjectMember,
   listProjectMembers, updateProjectMemberRole, removeProjectMember, transferProjectOwnership,
-  hashPassword, normalizeGlobalRole,
+  hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, setMapFavorite,
 } from './db.js';
 import {
   loadSession, loginWithEmail, logoutSession, registerUser, updateProfile, changePassword,
@@ -44,6 +44,20 @@ app.use(cors());
 app.use(express.json({ limit: '12mb' }));
 // 所有请求注入当前会话/用户。
 app.use(loadSession);
+app.use('/uploads', (req, res, next) => {
+  let storedName;
+  // 与静态文件服务一致地处理编码字符和重复斜杠，避免路径别名绕过回收站校验。
+  try { storedName = path.posix.normalize(decodeURIComponent(req.path)).slice(1); } catch { return res.status(400).json({ error: '无效媒体路径' }); }
+  const deletedAttachment = db.prepare(`
+    SELECT 1 FROM attachments a
+    JOIN features f ON f.id = a.feature_id
+    JOIN layers l ON l.id = f.layer_id
+    JOIN maps m ON m.id = l.map_id
+    WHERE a.stored_name = ? AND m.deleted_at IS NOT NULL
+  `).get(storedName);
+  if (deletedAttachment) return res.status(404).json({ error: '媒体文件不存在' });
+  next();
+});
 app.use('/uploads', express.static(uploadsDir, {
   dotfiles: 'deny',
   index: false,
@@ -202,6 +216,8 @@ app.delete('/api/auth/sessions', requireUser, (req, res) => {
 });
 
 app.get('/api/maps', requireUser, (req, res) => res.json(listVisibleMaps(req.user)));
+// 静态回收站路径必须先于 /api/maps/:mapId。
+app.get('/api/maps/trash', requireUser, (req, res) => res.json(listVisibleTrashMaps(req.user)));
 app.get('/api/projects', requireUser, (req, res) => res.json(listVisibleProjects(req.user)));
 
 app.post('/api/projects', requireUser, (req, res) => {
@@ -276,8 +292,13 @@ app.post('/api/maps', requireUser, (req, res) => {
   let projectId;
   const requestedProjectId = id(req.body.projectId ?? req.body.project_id);
   if (requestedProjectId) {
+    const project = db.prepare('SELECT status FROM projects WHERE id = ?').get(requestedProjectId);
+    if (!project) return notFound(res, '项目不存在');
+    if (project.status !== 'active') return res.status(400).json({ error: '已归档项目不能创建地图' });
     const membership = db.prepare('SELECT role FROM project_members WHERE project_id = ? AND user_id = ?').get(requestedProjectId, req.user.id);
-    if (!membership && req.user.role !== 'admin') return res.status(403).json({ error: '无权在该项目创建地图' });
+    if (req.user.role !== 'admin' && membership?.role !== 'owner' && membership?.role !== 'editor') {
+      return res.status(403).json({ error: '无权在该项目创建地图' });
+    }
     projectId = requestedProjectId;
   } else {
     const candidates = listVisibleProjects(req.user);
@@ -287,7 +308,7 @@ app.post('/api/maps', requireUser, (req, res) => {
         const row = db.prepare('SELECT role FROM project_members WHERE project_id = ? AND user_id = ?').get(p.id, req.user.id);
         return row?.role === 'owner' || row?.role === 'editor';
       });
-    projectId = editable[0]?.id || candidates[0]?.id || null;
+    projectId = editable[0]?.id || null;
   }
   if (!projectId) return res.status(400).json({ error: '当前账号没有可创建地图的项目，请联系项目负责人或数据管理员' });
   const result = db.prepare(`
@@ -324,6 +345,10 @@ app.get('/api/maps/:mapId', (req, res) => {
 // 通过返回 true；失败时已写入 401/403 响应并返回 false。
 function assertEditor(req, res, mapId) {
   if (!req.user) { res.status(401).json({ error: '请先登录' }); return false; }
+  if (!db.prepare('SELECT 1 FROM maps WHERE id = ? AND deleted_at IS NULL').get(mapId)) {
+    notFound(res, '地图不存在');
+    return false;
+  }
   if (req.user.role === 'admin') return true;
   const membership = db.prepare(`
     SELECT role FROM project_members pm
@@ -334,6 +359,40 @@ function assertEditor(req, res, mapId) {
   res.status(403).json({ error: '无权修改该地图' });
   return false;
 }
+
+app.patch('/api/maps/:mapId/favorite', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!getMap(mapId)) return notFound(res, '地图不存在');
+  if (typeof req.body?.favorite !== 'boolean') return res.status(400).json({ error: 'favorite 必须为布尔值' });
+  res.json(setMapFavorite(req.user, mapId, req.body.favorite));
+});
+
+app.post('/api/maps/:mapId/trash', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  const existing = db.prepare('SELECT name, deleted_at FROM maps WHERE id = ?').get(mapId);
+  if (!existing) return notFound(res, '地图不存在');
+  if (!canManageMap(req.user, mapId)) return res.status(403).json({ error: '仅项目所有者或管理员可将地图移至回收站' });
+  if (!existing.deleted_at) {
+    const deletedAt = now();
+    db.prepare('UPDATE maps SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE id = ?').run(deletedAt, deletedAt, mapId);
+    audit('trash', 'map', mapId, `地图“${existing.name}”移至回收站`);
+    // 与现有编辑器的删除事件兼容，同时移出实时协作房间。
+    emitMapOp(mapId, 'map.deleted', req.user, { entityId: mapId });
+  }
+  res.json(listVisibleTrashMaps(req.user).find((map) => map.id === mapId));
+});
+
+app.post('/api/maps/:mapId/restore', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  const existing = db.prepare('SELECT name, deleted_at FROM maps WHERE id = ?').get(mapId);
+  if (!existing) return notFound(res, '地图不存在');
+  if (!canManageMap(req.user, mapId)) return res.status(403).json({ error: '仅项目所有者或管理员可恢复地图' });
+  if (existing.deleted_at) {
+    db.prepare('UPDATE maps SET deleted_at = NULL, updated_at = ?, version = version + 1 WHERE id = ?').run(now(), mapId);
+    audit('restore', 'map', mapId, `恢复地图“${existing.name}”`);
+  }
+  res.json(getMap(mapId));
+});
 
 app.patch('/api/maps/:mapId', (req, res) => {
   const mapId = id(req.params.mapId);
@@ -363,9 +422,12 @@ app.patch('/api/maps/:mapId', (req, res) => {
 
 app.delete('/api/maps/:mapId', (req, res) => {
   const mapId = id(req.params.mapId);
-  const existing = db.prepare('SELECT name FROM maps WHERE id = ?').get(mapId);
+  const existing = db.prepare('SELECT name, deleted_at FROM maps WHERE id = ?').get(mapId);
   if (!existing) return notFound(res, '地图不存在');
-  if (!assertEditor(req, res, mapId)) return;
+  if (existing.deleted_at) {
+    if (!req.user) return res.status(401).json({ error: '请先登录' });
+    if (!canManageMap(req.user, mapId)) return res.status(403).json({ error: '仅项目所有者或管理员可永久删除地图' });
+  } else if (!assertEditor(req, res, mapId)) return;
   const attachments = db.prepare(`
     SELECT a.stored_name FROM attachments a
     JOIN features f ON f.id = a.feature_id
@@ -528,8 +590,11 @@ app.patch('/api/features/:featureId', (req, res) => {
     values.push(JSON.stringify(req.body.style || {}));
   }
   if (Object.hasOwn(req.body, 'layerId')) {
+    const targetLayerId = id(req.body.layerId);
+    const target = db.prepare('SELECT id FROM layers WHERE id = ? AND map_id = ?').get(targetLayerId, feature.map_id);
+    if (!target) return res.status(400).json({ error: '目标图层必须属于当前地图' });
     fields.push('layer_id = ?');
-    values.push(id(req.body.layerId));
+    values.push(targetLayerId);
   }
   if (fields.length) {
     fields.push('version = version + 1', 'updated_at = ?');
@@ -594,6 +659,8 @@ app.post('/api/features/:featureId/attachments', mediaUpload.array('files', MAX_
       });
     }
 
+    // 文件检测会 await；检测期间地图可能已被移至回收站。
+    if (!getMap(feature.map_id)) throw httpError('地图不存在', 404);
     db.exec('BEGIN');
     transactionStarted = true;
     const insert = db.prepare(`
@@ -705,6 +772,7 @@ app.get('/api/admin/layers', (req, res) => res.json(db.prepare(`
   FROM layers l
   JOIN maps m ON m.id = l.map_id
   LEFT JOIN projects p ON p.id = m.project_id
+  WHERE m.deleted_at IS NULL
   ORDER BY l.updated_at DESC
 `).all()));
 app.get('/api/admin/features', (req, res) => res.json(db.prepare(`
@@ -715,6 +783,7 @@ app.get('/api/admin/features', (req, res) => res.json(db.prepare(`
   JOIN layers l ON l.id = f.layer_id
   JOIN maps m ON m.id = l.map_id
   LEFT JOIN projects p ON p.id = m.project_id
+  WHERE m.deleted_at IS NULL
   ORDER BY f.updated_at DESC
 `).all()));
 app.get('/api/admin/attachments', (req, res) => res.json(db.prepare(`
@@ -724,17 +793,19 @@ app.get('/api/admin/attachments', (req, res) => res.json(db.prepare(`
   JOIN features f ON f.id = a.feature_id
   JOIN layers l ON l.id = f.layer_id
   JOIN maps m ON m.id = l.map_id
+  WHERE m.deleted_at IS NULL
   ORDER BY a.created_at DESC
 `).all()));
 app.get('/api/admin/imports', (req, res) => res.json(db.prepare(`
   SELECT i.*, m.name AS map_name, l.name AS layer_name FROM import_jobs i
-  JOIN maps m ON m.id = i.map_id LEFT JOIN layers l ON l.id = i.layer_id ORDER BY i.created_at DESC
+  JOIN maps m ON m.id = i.map_id LEFT JOIN layers l ON l.id = i.layer_id
+  WHERE m.deleted_at IS NULL ORDER BY i.created_at DESC
 `).all()));
 app.get('/api/admin/audit', (req, res) => res.json(db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 250').all()));
 app.get('/api/admin/users', (req, res) => res.json(db.prepare(`
   SELECT u.*,
     (SELECT COUNT(*) FROM project_members pm WHERE pm.user_id = u.id) AS project_count,
-    (SELECT COUNT(*) FROM maps m JOIN projects p ON p.id = m.project_id WHERE p.owner_user_id = u.id) AS map_count
+    (SELECT COUNT(*) FROM maps m JOIN projects p ON p.id = m.project_id WHERE p.owner_user_id = u.id AND m.deleted_at IS NULL) AS map_count
   FROM users u ORDER BY u.created_at DESC
 `).all()));
 

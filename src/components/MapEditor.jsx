@@ -3,13 +3,14 @@ import {
   ArrowLeft, Camera, ChevronDown, ChevronRight, CircleHelp, Database, Download, Eye, GitFork,
   GripVertical, Hand, Layers, Link2, List, LocateFixed, MapPin, Menu, MoreVertical,
   MousePointer2, PaintBucket, Palette, Pencil, Plus, Redo2, Route, Ruler, Search, Share2,
-  Shapes, Table2, Trash2, Undo2, Upload, Video, X, ZoomIn, ZoomOut,
+  Shapes, Table2, Trash2, Undo2, Upload, Video, X, ZoomIn, ZoomOut, Maximize, Minimize, Car, Bike, Footprints,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { navigate } from '../App.jsx';
 import { useAuth } from '../auth.jsx';
 import { LanguageSwitch, useI18n } from '../i18n/index.jsx';
 import { applyMapOp, connectMapRoom } from '../realtime.js';
+import { AMAP_CONFIGURED, routeAMap, searchAMapPlaces, suggestAMapPlaces } from '../amap.js';
 import AmapMap, { AMAP_MAX_ZOOM, AMAP_MIN_ZOOM } from './AmapMap.jsx';
 import FeatureMediaGallery, {
   formatFileSize, MAX_ATTACHMENTS_PER_FEATURE, MAX_FILES_PER_UPLOAD, MEDIA_ACCEPT, validateMediaSelection,
@@ -18,6 +19,7 @@ import {
   AMAP_PROVIDER, BASE_MAPS, baseMapPreviewStyle, distanceMeters, exportCsv, exportGeoJson, exportKml,
   formatDate, normalizeBaseMapKey, parseImportFile,
 } from '../utils.js';
+import './editor.css';
 
 const COLORS = ['#1a73e8', '#00897b', '#8e24aa', '#e85d4a', '#f9ab00', '#d93025', '#5f6368', '#039be5'];
 
@@ -483,7 +485,8 @@ function PlaceFeatureCard({ feature, layer, onClose, onCopyCoordinates, onStyle,
 
 export default function MapEditor({ mapId }) {
   const { user } = useAuth();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
+  const text = (zh, en) => lang === 'en' ? en : zh;
   const [mapData, setMapData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -508,6 +511,13 @@ export default function MapEditor({ mapId }) {
   const [activeCandidateId, setActiveCandidateId] = useState(null);
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [panelTab, setPanelTab] = useState('layers');
+  const [trafficVisible, setTrafficVisible] = useState(false);
+  const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
+  const [routeTravelMode, setRouteTravelMode] = useState('driving');
+  const [searchSuggestions, setSearchSuggestions] = useState([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [toast, setToast] = useState('');
   const [quickMediaFeatureId, setQuickMediaFeatureId] = useState(null);
   const [history, setHistory] = useState([]);
@@ -522,6 +532,27 @@ export default function MapEditor({ mapId }) {
   const currentCenterRef = useRef(null);
   const routePendingRef = useRef(false);
   const roomRef = useRef(null);
+  const mapDataLatestRef = useRef(mapData);
+  const geometryWriteQueueRef = useRef(Promise.resolve());
+  const searchRequestRef = useRef(0);
+  mapDataLatestRef.current = mapData;
+
+  useEffect(() => {
+    const handleFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', handleFullscreen);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreen);
+  }, []);
+
+  useEffect(() => {
+    if (!suggestionsOpen || searchQuery.trim().length < 2 || !AMAP_CONFIGURED) { setSearchSuggestions([]); return undefined; }
+    let disposed = false;
+    const timer = window.setTimeout(() => {
+      suggestAMapPlaces(searchQuery.trim()).then((rows) => {
+        if (!disposed) { setSearchSuggestions(rows.slice(0, 7)); setSuggestionIndex(-1); }
+      }).catch(() => { if (!disposed) setSearchSuggestions([]); });
+    }, 250);
+    return () => { disposed = true; window.clearTimeout(timer); };
+  }, [searchQuery, suggestionsOpen]);
 
   const loadMap = useCallback(async () => {
     try {
@@ -663,6 +694,28 @@ export default function MapEditor({ mapId }) {
     setRedoHistory([]);
   };
 
+  const persistGeometry = (feature, geometry, historyEnabled = true) => {
+    if (!canEdit) return Promise.resolve();
+    const write = geometryWriteQueueRef.current.catch(() => {}).then(async () => {
+      const latest = mapDataLatestRef.current?.layers.flatMap((layer) => layer.features).find((item) => item.id === feature.id);
+      if (!latest) return;
+      if (JSON.stringify(latest.geometry) === JSON.stringify(geometry)) return;
+      setSaving(true);
+      try {
+        const data = await api.updateFeature(feature.id, { geometry, expectedVersion: latest.version });
+        mapDataLatestRef.current = data;
+        replaceData(data);
+        if (historyEnabled) addHistory({ type: 'geometry', featureId: feature.id, before: latest.geometry, after: geometry });
+      } catch (requestError) {
+        handleWriteError(requestError);
+        if (!requestError.conflict) await loadMap();
+        throw requestError;
+      }
+    });
+    geometryWriteQueueRef.current = write;
+    return write;
+  };
+
   const addFeature = async (layerId, body, historyEnabled = true) => {
     if (!canEdit) throw new Error('当前为只读权限');
     setSaving(true);
@@ -700,7 +753,8 @@ export default function MapEditor({ mapId }) {
     if (!action) return;
     setHistory((items) => items.slice(0, -1));
     try {
-      if (action.type === 'create') await deleteFeature(action.feature, false);
+      if (action.type === 'geometry') await persistGeometry({ id: action.featureId }, action.before, false);
+      else if (action.type === 'create') await deleteFeature(action.feature, false);
       else await addFeature(action.layerId, action.feature, false);
       setRedoHistory((items) => [...items, action]);
       setToast('已撤销上一步操作');
@@ -712,7 +766,8 @@ export default function MapEditor({ mapId }) {
     if (!action) return;
     setRedoHistory((items) => items.slice(0, -1));
     try {
-      if (action.type === 'create') await addFeature(action.layerId, action.feature, false);
+      if (action.type === 'geometry') await persistGeometry({ id: action.featureId }, action.after, false);
+      else if (action.type === 'create') await addFeature(action.layerId, action.feature, false);
       else {
         const candidate = mapData.layers.flatMap((layer) => layer.features).find((feature) => feature.name === action.feature.name && feature.type === action.feature.type);
         if (candidate) await deleteFeature(candidate, false);
@@ -754,15 +809,13 @@ export default function MapEditor({ mapId }) {
     if (!selectedLayer || points.length < 2) return;
     setSaving(true);
     try {
-      const [[lng1, lat1], [lng2, lat2]] = points;
-      const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${lng1},${lat1};${lng2},${lat2}?overview=full&geometries=geojson`);
-      const result = await response.json();
-      const geometry = result.routes?.[0]?.geometry || { type: 'LineString', coordinates: points };
-      await addFeature(selectedLayer.id, { name: '驾车路线', description: result.routes?.[0] ? `${(result.routes[0].distance / 1000).toFixed(1)} 公里 · 预计 ${Math.round(result.routes[0].duration / 60)} 分钟` : '自定义路线', geometry, style: { color: '#1a73e8', weight: 6 } });
-      setToast('已添加驾车路线');
-    } catch {
-      await addFeature(selectedLayer.id, { name: '驾车路线', description: '直线路线（路由服务暂不可用）', geometry: { type: 'LineString', coordinates: points }, style: { color: '#1a73e8', weight: 6 } });
-      setToast('路由服务暂不可用，已添加直线路线');
+      const result = await routeAMap(points, routeTravelMode);
+      const routeName = routeTravelMode === 'walking' ? text('步行路线', 'Walking route') : routeTravelMode === 'cycling' ? text('骑行路线', 'Cycling route') : text('驾车路线', 'Driving route');
+      await addFeature(selectedLayer.id, { name: routeName, description: text(`${(result.distance / 1000).toFixed(1)} 公里 · 预计 ${Math.round(result.duration / 60)} 分钟`, `${(result.distance / 1000).toFixed(1)} km · ${Math.round(result.duration / 60)} min`), geometry: result.geometry, style: { color: '#1a73e8', weight: 6 } });
+      mapRef.current?.fitPositions(result.geometry.coordinates, 16);
+      setToast(text('路线已添加到图层', 'Route added to your layer'));
+    } catch (routeError) {
+      setToast(`${text('路线规划失败：', 'Unable to plan route: ')}${routeError.message}`);
     } finally {
       setDraftPoints([]);
       setHoverPoint(null);
@@ -1042,43 +1095,52 @@ export default function MapEditor({ mapId }) {
     setStyleTarget(null);
   };
 
-  const normalizeSearchResult = (result) => ({
-    id: `place-${result.place_id}`,
-    name: result.display_name?.split(',')[0] || result.display_name || '搜索地点',
-    address: result.display_name || '',
-    display_name: result.display_name || '',
-    position: [Number(result.lon), Number(result.lat)],
-    lon: Number(result.lon),
-    lat: Number(result.lat),
-    importance: Number(result.importance) || 0,
-    type: result.type,
-  });
-
-  const searchPlaces = async (event) => {
+  const searchPlaces = async (event, query = searchQuery) => {
     event?.preventDefault();
-    if (!searchQuery.trim()) return;
+    if (!query.trim()) return;
+    const requestId = ++searchRequestRef.current;
     setSearching(true);
+    setSuggestionsOpen(false);
     setActiveCandidateId(null);
     try {
-      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&accept-language=zh-CN&q=${encodeURIComponent(searchQuery.trim())}`);
-      const raw = await response.json();
-      // Sort by Nominatim's relevance (importance) descending, then assign the
-      // 1-based sequence number shown on the marker and the strip.
-      const candidates = (Array.isArray(raw) ? raw : [])
-        .map(normalizeSearchResult)
-        .sort((a, b) => b.importance - a.importance)
-        .map((candidate, index) => ({ ...candidate, index: index + 1 }));
+      const candidates = await searchAMapPlaces(query.trim());
+      if (requestId !== searchRequestRef.current) return;
       setSearchResults(candidates);
       if (candidates.length) mapRef.current?.fitPositions(candidates.map((candidate) => candidate.position), 15);
-    } catch {
-      setSearchResults([normalizeSearchResult({ place_id: 'fallback', display_name: `${searchQuery}（搜索服务离线，可手动标记）`, lat: mapData.center_lat, lon: mapData.center_lng, type: 'place' })].map((candidate, index) => ({ ...candidate, index: index + 1 })));
-    } finally { setSearching(false); }
+      else setToast(text('未找到相关地点，请换一个关键词。', 'No places found. Try another search.'));
+    } catch (searchError) {
+      if (requestId !== searchRequestRef.current) return;
+      setSearchResults([]);
+      setToast(`${text('搜索失败：', 'Search unavailable: ')}${searchError.message}`);
+    } finally { if (requestId === searchRequestRef.current) setSearching(false); }
   };
 
   const selectCandidate = useCallback((candidate) => {
     setActiveCandidateId(candidate.id);
     mapRef.current?.setView(candidate.position, 16);
   }, []);
+
+  const chooseSuggestion = (suggestion) => {
+    setSearchQuery(suggestion.name);
+    setSuggestionsOpen(false);
+    if (suggestion.position) {
+      const candidate = { ...suggestion, index: 1 };
+      setSearchResults([candidate]);
+      selectCandidate(candidate);
+    } else searchPlaces(null, suggestion.name);
+  };
+
+  const handleSearchKey = (event) => {
+    if (event.key === 'Escape') { setSuggestionsOpen(false); return; }
+    if (!suggestionsOpen || !searchSuggestions.length) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setSuggestionIndex((index) => event.key === 'ArrowDown' ? (index + 1) % searchSuggestions.length : (index - 1 + searchSuggestions.length) % searchSuggestions.length);
+    } else if (event.key === 'Enter' && suggestionIndex >= 0) {
+      event.preventDefault();
+      chooseSuggestion(searchSuggestions[suggestionIndex]);
+    }
+  };
 
   const addSearchResult = async (candidate) => {
     if (!selectedLayer) return;
@@ -1110,11 +1172,11 @@ export default function MapEditor({ mapId }) {
   const generateShare = async () => setShare(await api.share(mapId, 'view'));
 
   const toolInstruction = {
-    marker: '点击地图放置标记',
-    line: '逐点点击绘线，双击结束',
-    polygon: '逐点点击绘制区域，双击结束',
-    route: draftPoints.length ? '再点击路线终点' : '点击路线起点',
-    measure: '逐点测量，双击结束',
+    marker: text('点击地图放置标记', 'Click the map to add a place'),
+    line: text('逐点点击绘线，双击结束', 'Click to draw a line; double-click to finish'),
+    polygon: text('逐点点击绘制区域，双击结束', 'Click to draw a shape; double-click to finish'),
+    route: draftPoints.length ? text('再点击路线终点', 'Click your destination') : text('点击路线起点', 'Click your starting point'),
+    measure: text('逐点测量，双击结束', 'Click to measure; double-click to finish'),
   }[activeTool];
   const canFinishDraft = ['line', 'measure'].includes(activeTool)
     ? draftPoints.length >= 2
@@ -1211,7 +1273,10 @@ export default function MapEditor({ mapId }) {
           <button onClick={() => setShareDialog(true)}><Share2 size={16} /> {t('editor.share')}</button>
           <button onClick={() => { window.history.pushState({}, '', `/maps/${mapId}?preview=1`); window.location.reload(); }}><Eye size={16} /> {t('editor.preview')}</button>
         </div>
-        <div className="layer-list" data-testid="layer-list">
+        <DrawingToolbar activeTool={activeTool} canEdit={canEdit} onTool={(tool) => { setSelectedFeatureId(null); setActiveTool(tool); setDraftPoints([]); setHoverPoint(null); }} canUndo={history.length > 0} canRedo={redoHistory.length > 0} onUndo={undo} onRedo={redo} />
+        <div className="editor-panel-tabs" role="tablist" aria-label={text('地图内容', 'Map content')}><button role="tab" aria-selected={panelTab === 'layers'} className={panelTab === 'layers' ? 'active' : ''} onClick={() => setPanelTab('layers')}>{text('图层', 'Layers')}</button><button role="tab" aria-selected={panelTab === 'places'} className={panelTab === 'places' ? 'active' : ''} onClick={() => setPanelTab('places')}>{text('地点', 'Places')}</button><span>{mapData.layers.reduce((total, layer) => total + layer.features.length, 0)} {text('个要素', 'features')}</span></div>
+        {panelTab === 'places' ? <div className="editor-places-list" role="tabpanel">{mapData.layers.flatMap((layer) => layer.features.map((feature) => <button key={feature.id} className={selectedFeatureId === feature.id ? 'active' : ''} onClick={() => selectFeature(feature, layer)}><span style={{ color: feature.style?.color || layer.style.color || '#1a73e8' }}>{feature.type === 'Point' ? <MapPin size={19} /> : <Route size={19} />}</span><span><b>{feature.name}</b><small>{layer.name}</small></span></button>))}{!allFeatureIds.size ? <p>{text('在地图上添加地点，让旅程开始。', 'Add a place to start your map.')}</p> : null}</div> : null}
+        <div className="layer-list" data-testid="layer-list" hidden={panelTab !== 'layers'} role="tabpanel">
           {mapData.layers.map((layer) => (
             <section key={layer.id} className={selectedLayerId === layer.id ? 'layer-section selected' : 'layer-section'} onClick={() => setSelectedLayerId(layer.id)}>
               <header className="layer-header">
@@ -1261,10 +1326,13 @@ export default function MapEditor({ mapId }) {
       <section className="map-workspace">
         <button className="mobile-panel-toggle" onClick={() => setMobilePanelOpen((value) => !value)} aria-label={t('editor.layerPanel')}><Menu size={20} /></button>
         <form className="map-search-bar" onSubmit={searchPlaces}>
-          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={t('editor.searchPlace')} aria-label={t('editor.searchPlace')} />
-          {searchQuery ? <button type="button" className="icon-button" onClick={() => { setSearchQuery(''); setSearchResults([]); setActiveCandidateId(null); }} aria-label={t('editor.clearSearch')}><X size={18} /></button> : null}
+          <Search className="search-leading-icon" size={20} />
+          <input value={searchQuery} onChange={(event) => { searchRequestRef.current += 1; setSearching(false); setSearchQuery(event.target.value); setSuggestionsOpen(true); }} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)} onKeyDown={handleSearchKey} placeholder={t('editor.searchPlace')} aria-label={t('editor.searchPlace')} role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && searchSuggestions.length > 0} aria-controls="map-search-suggestions" aria-activedescendant={suggestionIndex >= 0 && suggestionsOpen ? `map-suggestion-${suggestionIndex}` : undefined} />
+          {searchQuery ? <button type="button" className="icon-button" onClick={() => { searchRequestRef.current += 1; setSearching(false); setSearchQuery(''); setSearchResults([]); setActiveCandidateId(null); setSuggestionsOpen(false); }} aria-label={t('editor.clearSearch')}><X size={18} /></button> : null}
           <button className="search-submit" aria-label={t('editor.search')} disabled={searching}><Search size={19} /></button>
+          <button type="button" className="directions-shortcut" title={t('editor.toolRoute')} aria-label={t('editor.toolRoute')} disabled={!canEdit} onClick={() => { setActiveTool('route'); setDraftPoints([]); setHoverPoint(null); setSelectedFeatureId(null); }}><GitFork size={20} /></button>
         </form>
+        {suggestionsOpen && searchSuggestions.length ? <div id="map-search-suggestions" className="map-search-suggestions" role="listbox" aria-label={text('地点联想', 'Suggested places')}>{searchSuggestions.map((suggestion, index) => <button key={suggestion.id} type="button" id={`map-suggestion-${index}`} role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseSuggestion(suggestion)}><MapPin size={18} /><span><b>{suggestion.name}</b><small>{suggestion.address || suggestion.city}</small></span></button>)}</div> : null}
         {searchResults.length ? (
           <div className="search-candidate-strip" role="list" aria-label="搜索候选序列">
             {searchResults.map((candidate) => {
@@ -1292,9 +1360,10 @@ export default function MapEditor({ mapId }) {
             })}
           </div>
         ) : null}
-        <DrawingToolbar activeTool={activeTool} canEdit={canEdit} onTool={(tool) => { setSelectedFeatureId(null); setActiveTool(tool); setDraftPoints([]); setHoverPoint(null); }} canUndo={history.length > 0} canRedo={redoHistory.length > 0} onUndo={undo} onRedo={redo} />
-        {toolInstruction ? <div className="tool-instruction">{draftPoints.length ? `${draftPoints.length} 个顶点 · ` : ''}{toolInstruction}{canFinishDraft ? <button className="finish-drawing-button" onClick={() => finishDraft()} aria-label="完成绘制">完成</button> : null}<button onClick={() => { setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null); }} aria-label="取消绘制"><X size={15} /></button></div> : null}
-        <span className="visually-hidden" role="status" data-testid="draft-status">{draftPoints.length ? `已放置 ${draftPoints.length} 个绘图顶点` : ''}</span>
+        {activeTool === 'route' ? <div className="directions-mode-bar" role="group" aria-label={text('出行方式', 'Travel mode')}>{[['driving', Car, text('驾车', 'Drive')], ['walking', Footprints, text('步行', 'Walk')], ['cycling', Bike, text('骑行', 'Cycle')]].map(([mode, Icon, label]) => <button key={mode} className={routeTravelMode === mode ? 'active' : ''} aria-pressed={routeTravelMode === mode} onClick={() => setRouteTravelMode(mode)}><Icon size={17} />{label}</button>)}</div> : null}
+        {toolInstruction ? <div className="tool-instruction">{draftPoints.length ? `${draftPoints.length} ${text('个顶点', 'vertices')} · ` : ''}{toolInstruction}{canFinishDraft ? <button className="finish-drawing-button" onClick={() => finishDraft()} aria-label={text('完成绘制', 'Finish drawing')}>{text('完成', 'Finish')}</button> : null}<button onClick={() => { setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null); }} aria-label={text('取消绘制', 'Cancel drawing')}><X size={15} /></button></div> : null}
+        {canEdit && selectedFeatureContext && activeTool === 'pan' ? <div className="selected-edit-tip">{selectedFeatureContext.feature.type === 'Point' ? text('拖动标记以调整位置', 'Drag the marker to move this place') : text('拖动顶点以调整形状', 'Drag a vertex to reshape this feature')}</div> : null}
+        <span className="visually-hidden" role="status" data-testid="draft-status">{draftPoints.length ? text(`已放置 ${draftPoints.length} 个绘图顶点`, `${draftPoints.length} drawing vertices placed`) : ''}</span>
         <AmapMap
           activeTool={activeTool}
           className="editor-map"
@@ -1302,9 +1371,12 @@ export default function MapEditor({ mapId }) {
           draftPoints={draftPoints}
           hoverPoint={hoverPoint}
           mapData={mapData}
+          editable={canEdit}
+          trafficVisible={trafficVisible}
           markerColor={selectedLayer?.style.color || '#1a73e8'}
           onCandidateClick={selectCandidate}
           onFeatureSelect={(feature, layer) => selectFeature(feature, layer, false, false)}
+          onFeatureGeometryChange={(feature, geometry) => persistGeometry(feature, geometry).catch(() => {})}
           onMapClick={handleMapClick}
           onMapDoubleClick={handleDoubleClick}
           onMouseMove={(point) => setHoverPoint(activeTool === 'pan' || !point ? null : [point.lng, point.lat])}
@@ -1334,12 +1406,12 @@ export default function MapEditor({ mapId }) {
             {(user?.displayName || user?.name || '?').slice(0, 1)}
           </button>
         </div>
-        <div className="map-control-stack"><button onClick={locateUser} aria-label={t('editor.locate')}><LocateFixed size={19} /></button><span /><button disabled={zoomState.zoom !== null && zoomState.zoom >= zoomState.maxZoom} onClick={() => mapRef.current?.zoomIn()} aria-label={t('editor.zoomIn')}><ZoomIn size={19} /></button><button disabled={zoomState.zoom !== null && zoomState.zoom <= zoomState.minZoom} onClick={() => mapRef.current?.zoomOut()} aria-label={t('editor.zoomOut')}><ZoomOut size={19} /></button></div>
-        <div className="map-attribution-note">Open My Map · {AMAP_PROVIDER}</div>
+        <div className="map-control-stack"><button onClick={async () => { try { if (document.fullscreenElement) await document.exitFullscreen(); else if (document.querySelector('.editor-page').requestFullscreen) await document.querySelector('.editor-page').requestFullscreen(); else setToast(text('当前浏览器不支持全屏。', 'Fullscreen is unavailable.')); } catch { setToast(text('无法进入全屏。', 'Unable to enter fullscreen.')); } }} aria-label={text('全屏', 'Fullscreen')}>{fullscreen ? <Minimize size={19} /> : <Maximize size={19} />}</button><span /><button onClick={locateUser} aria-label={t('editor.locate')}><LocateFixed size={19} /></button><span /><button disabled={zoomState.zoom === null || zoomState.zoom >= zoomState.maxZoom} onClick={() => mapRef.current?.zoomIn()} aria-label={t('editor.zoomIn')}><ZoomIn size={19} /></button><button disabled={zoomState.zoom === null || zoomState.zoom <= zoomState.minZoom} onClick={() => mapRef.current?.zoomOut()} aria-label={t('editor.zoomOut')}><ZoomOut size={19} /></button></div>
         <section className={`base-map-stack${basePicker ? ' open' : ''}`} data-base-picker-root aria-label={t('editor.basemap')}>
           <button className="base-map-stack-toggle" onClick={() => setBasePicker((value) => !value)} aria-expanded={basePicker} aria-label={t('editor.switchBasemap', { name: activeBaseMap.name })} title={`${t('editor.basemap')} · ${activeBaseMap.name}`}>
             <span className="base-map-stack-thumb" style={baseMapPreviewStyle(activeBaseMapKey)} />
             <Layers size={15} />
+            <span className="base-map-toggle-label">{t('editor.basemap')}</span>
           </button>
           {basePicker ? (
             <div className="base-map-stack-fan">
@@ -1349,6 +1421,7 @@ export default function MapEditor({ mapId }) {
                   <span className="base-map-stack-label">{value.name}</span>
                 </button>
               ))}
+              <button type="button" className={`traffic-toggle${trafficVisible ? ' active' : ''}`} aria-pressed={trafficVisible} onClick={() => setTrafficVisible((visible) => !visible)}><Car size={22} /><span className="base-map-stack-label">{text('实时路况', 'Traffic')}</span></button>
             </div>
           ) : null}
         </section>

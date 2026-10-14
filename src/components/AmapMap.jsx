@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { LocateFixed, Maximize, Minimize, ZoomIn, ZoomOut } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { AMAP_CONFIGURED, loadAMap, toDisplayLngLat, toStorageLngLat } from '../amap.js';
 import { getBaseMapConfig, normalizeBaseMapKey } from '../utils.js';
+import { useI18n } from '../i18n/index.jsx';
+import './editor.css';
 
 export const AMAP_MIN_ZOOM = 2;
 export const AMAP_MAX_ZOOM = 19;
@@ -194,6 +197,12 @@ function buildController(AMap, map, registry, reportZoom) {
       reportZoom();
     },
     resize: () => map.resize(),
+    async toggleFullscreen() {
+      const page = map.getContainer().closest('.editor-page, .public-map-page, .preview-editor-page') || map.getContainer();
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (page.requestFullscreen) await page.requestFullscreen();
+      else throw new Error('当前浏览器不支持全屏。');
+    },
     rawMap: map,
   };
 }
@@ -221,6 +230,7 @@ function showBaseLayerSet(layerSet, baseMapKey) {
 
 export default function AmapMap({
   activeTool = '',
+  editable = false,
   candidateColor = DEFAULT_CANDIDATE_COLOR,
   className = '',
   draftMarker = null,
@@ -230,6 +240,7 @@ export default function AmapMap({
   markerColor = DEFAULT_COLOR,
   onCandidateClick,
   onFeatureSelect,
+  onFeatureGeometryChange,
   onMapClick,
   onMapDoubleClick,
   onMouseMove,
@@ -241,7 +252,10 @@ export default function AmapMap({
   searchCandidates = [],
   selectedFeatureId = null,
   showZoomControls = false,
+  trafficVisible = false,
 }) {
+  const { lang, t } = useI18n();
+  const text = (zh, en) => lang === 'en' ? en : zh;
   const shellRef = useRef(null);
   const surfaceRef = useRef(null);
   const amapRef = useRef(null);
@@ -249,6 +263,10 @@ export default function AmapMap({
   const baseLayersRef = useRef(null);
   const appliedBaseMapKeyRef = useRef(null);
   const controllerRef = useRef(null);
+  const trafficLayerRef = useRef(null);
+  const editorRef = useRef(null);
+  const editingIdRef = useRef(null);
+  const dragListenersRef = useRef([]);
   const overlayRegistryRef = useRef(new Map());
   const featureLookupRef = useRef(new Map());
   const draftOverlaysRef = useRef([]);
@@ -264,10 +282,13 @@ export default function AmapMap({
   const [errorMessage, setErrorMessage] = useState('');
   const [popupHost, setPopupHost] = useState(null);
   const [zoom, setZoom] = useState(Number(mapData.zoom) || 13);
+  const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
+  const [controlError, setControlError] = useState('');
 
   callbacksRef.current = {
     onCandidateClick,
     onFeatureSelect,
+    onFeatureGeometryChange,
     onMapClick,
     onMapDoubleClick,
     onMouseMove,
@@ -322,6 +343,10 @@ export default function AmapMap({
       const map = new AMap.Map(surfaceRef.current, options);
       mapRef.current = map;
       baseLayersRef.current = baseLayers;
+      const trafficLayer = new AMap.TileLayer.Traffic({ zIndex: 12 });
+      trafficLayerRef.current = trafficLayer;
+      map.add(trafficLayer);
+      trafficLayer.hide();
       appliedBaseMapKeyRef.current = normalizeBaseMapKey(currentData.base_map);
 
       const tooltipElement = document.createElement('div');
@@ -411,8 +436,11 @@ export default function AmapMap({
       resizeObserver?.disconnect();
       if (surfaceDoubleClickHandler) surfaceRef.current?.removeEventListener('dblclick', surfaceDoubleClickHandler, true);
       infoWindowRef.current?.close();
+      editorRef.current?.close();
+      editorRef.current = null;
       mapRef.current?.destroy();
       mapRef.current = null;
+      trafficLayerRef.current = null;
       baseLayersRef.current = null;
       appliedBaseMapKeyRef.current = null;
       controllerRef.current = null;
@@ -427,6 +455,17 @@ export default function AmapMap({
       infoWindowRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const handleFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', handleFullscreen);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreen);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    trafficLayerRef.current?.[trafficVisible ? 'show' : 'hide']();
+  }, [ready, trafficVisible]);
 
   const baseMapKey = normalizeBaseMapKey(mapData.base_map);
   useEffect(() => {
@@ -499,6 +538,69 @@ export default function AmapMap({
     }
   }, [mapData, ready, selectedFeatureId]);
 
+  // Only the selected feature is editable. End events persist one WGS84
+  // geometry update, so moving a vertex never creates a stream of writes.
+  const selectedGeometry = JSON.stringify(mapData.layers.flatMap((layer) => layer.visible ? layer.features : []).find((feature) => feature.id === selectedFeatureId)?.geometry);
+  useEffect(() => {
+    editorRef.current?.close();
+    editorRef.current = null;
+    editingIdRef.current = null;
+    for (const { overlay, handler } of dragListenersRef.current) overlay.off('dragend', handler);
+    dragListenersRef.current = [];
+    for (const record of overlayRegistryRef.current.values()) if (record.type === 'Point') record.overlay.setDraggable(false);
+    if (!ready || !editable || activeTool !== 'pan') return undefined;
+    const record = overlayRegistryRef.current.get(selectedFeatureId);
+    if (!record) return undefined;
+    let disposed = false;
+    editingIdRef.current = selectedFeatureId;
+    const saveGeometry = () => {
+      const context = featureLookupRef.current.get(selectedFeatureId);
+      if (!context || disposed) return;
+      let geometry;
+      if (record.type === 'Point') {
+        const point = storagePoint(record.overlay.getPosition());
+        geometry = { type: 'Point', coordinates: [point.lng, point.lat] };
+      } else {
+        const toPoint = (point) => {
+          const stored = storagePoint(point);
+          return [stored.lng, stored.lat];
+        };
+        const path = record.overlay.getPath();
+        if (record.type === 'LineString') geometry = { type: 'LineString', coordinates: path.map(toPoint) };
+        else {
+          const rings = Array.isArray(path[0]) ? path : [path];
+          geometry = { type: 'Polygon', coordinates: rings.map((ring) => {
+            const points = ring.map(toPoint);
+            const first = points[0];
+            const last = points.at(-1);
+            return first && (first[0] !== last[0] || first[1] !== last[1]) ? [...points, first] : points;
+          }) };
+        }
+      }
+      if (JSON.stringify(geometry) !== JSON.stringify(context.feature.geometry)) callbacksRef.current.onFeatureGeometryChange?.(context.feature, geometry, context.layer);
+    };
+    if (record.type === 'Point') {
+      record.overlay.setDraggable(true);
+      record.overlay.on('dragend', saveGeometry);
+      dragListenersRef.current.push({ overlay: record.overlay, handler: saveGeometry });
+    } else {
+      const pluginName = record.type === 'Polygon' ? 'PolygonEditor' : 'PolylineEditor';
+      amapRef.current.plugin(`AMap.${pluginName}`, () => {
+        if (disposed || !mapRef.current || editingIdRef.current !== selectedFeatureId) return;
+        const editor = new amapRef.current[pluginName](mapRef.current, record.overlay);
+        editorRef.current = editor;
+        ['adjust', 'addnode', 'removenode', 'move'].forEach((event) => editor.on(event, saveGeometry));
+        editor.open();
+      });
+    }
+    return () => {
+      disposed = true;
+      editorRef.current?.close();
+      editorRef.current = null;
+      if (record.type === 'Point') { record.overlay.off('dragend', saveGeometry); record.overlay.setDraggable(false); }
+    };
+  }, [activeTool, editable, ready, selectedFeatureId, selectedGeometry]);
+
   // Search candidates render as numbered amber pins (1..N) so the user can
   // cross-reference them with the sequence strip under the search box. They
   // live outside the feature overlay registry so they never persist or get
@@ -566,8 +668,9 @@ export default function AmapMap({
     if (overlays.length) map.add(overlays);
     draftOverlaysRef.current = overlays;
     shellRef.current.dataset.drawTool = activeTool === 'pan' ? '' : activeTool;
-    map.setDefaultCursor(activeTool === 'pan' ? 'grab' : 'crosshair');
-    map.setStatus({ dragEnable: activeTool === 'pan', doubleClickZoom: false });
+    const drawing = activeTool && activeTool !== 'pan';
+    map.setDefaultCursor(drawing ? 'crosshair' : 'grab');
+    map.setStatus({ dragEnable: !drawing, doubleClickZoom: !drawing });
 
     return () => {
       if (mapRef.current && overlays.length) mapRef.current.remove(overlays);
@@ -590,24 +693,33 @@ export default function AmapMap({
     popupHost && popup?.content ? createPortal(popup.content, popupHost) : null
   ), [popup?.content, popupHost]);
 
+  const locateUser = () => {
+    setControlError('');
+    if (!navigator.geolocation) { setControlError(text('当前浏览器不支持定位。', 'Geolocation is unavailable.')); return; }
+    navigator.geolocation.getCurrentPosition(({ coords }) => controllerRef.current?.setView([coords.longitude, coords.latitude], 16), () => setControlError(text('无法获取位置，请检查定位权限。', 'Unable to locate you. Check location permissions.')));
+  };
+
   return (
     <div ref={shellRef} className={`amap-map-shell ${className}`.trim()} data-amap-status={status}>
-      <div ref={surfaceRef} className="amap-map-surface" aria-label="高德地图" />
-      {status === 'loading' ? <div className="basemap-loading-notice" role="status">正在加载高德地图…</div> : null}
+      <div ref={surfaceRef} className="amap-map-surface" aria-label={text('高德地图', 'AMap')} />
+      {status === 'loading' ? <div className="basemap-loading-notice" role="status">{text('正在加载高德地图…', 'Loading AMap…')}</div> : null}
       {status === 'missing' ? (
         <div className="basemap-config-notice" role="alert" data-testid="amap-key-notice">
-          <strong>高德地图尚未配置</strong>
-          <span>请在 .env.local 中设置 VITE_AMAP_KEY 后重启应用。</span>
-          <a href="https://console.amap.com/dev/key/app" target="_blank" rel="noreferrer">配置高德 Key</a>
+          <strong>{text('高德地图尚未配置', 'Set up your AMap')}</strong>
+          <span>{text('请在 .env.local 中设置 VITE_AMAP_KEY 与安全密钥，然后重启应用。', 'Set VITE_AMAP_KEY and its security code in .env.local, then restart the app.')}</span>
+          <a href="https://console.amap.com/dev/key/app" target="_blank" rel="noreferrer">{text('配置高德 Key', 'Configure AMap key')}</a>
         </div>
       ) : null}
-      {status === 'error' ? <div className="basemap-config-notice error" role="alert"><strong>高德地图加载失败</strong><span>{errorMessage}</span></div> : null}
+      {status === 'error' ? <div className="basemap-config-notice error" role="alert"><strong>{text('高德地图加载失败', 'Unable to load AMap')}</strong><span>{errorMessage}</span></div> : null}
       {showZoomControls ? (
-        <div className="amap-native-zoom-controls" aria-label="地图缩放控件">
-          <button type="button" aria-label="放大" disabled={zoom >= AMAP_MAX_ZOOM} onClick={() => controllerRef.current?.zoomIn()}>+</button>
-          <button type="button" aria-label="缩小" disabled={zoom <= AMAP_MIN_ZOOM} onClick={() => controllerRef.current?.zoomOut()}>−</button>
+        <div className="amap-native-zoom-controls" aria-label={text('地图控件', 'Map controls')}>
+          <button type="button" aria-label={text('全屏', 'Fullscreen')} onClick={() => controllerRef.current?.toggleFullscreen().catch((error) => setControlError(error.message))}>{fullscreen ? <Minimize size={20} /> : <Maximize size={20} />}</button>
+          <button type="button" aria-label={t('editor.locate')} onClick={locateUser}><LocateFixed size={20} /></button>
+          <button type="button" aria-label={t('editor.zoomIn')} disabled={!ready || zoom >= AMAP_MAX_ZOOM} onClick={() => controllerRef.current?.zoomIn()}><ZoomIn size={20} /></button>
+          <button type="button" aria-label={t('editor.zoomOut')} disabled={!ready || zoom <= AMAP_MIN_ZOOM} onClick={() => controllerRef.current?.zoomOut()}><ZoomOut size={20} /></button>
         </div>
       ) : null}
+      {controlError ? <button className="map-control-error" role="alert" onClick={() => setControlError('')}>{controlError}</button> : null}
       {popupPortal}
     </div>
   );

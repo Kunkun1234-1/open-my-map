@@ -53,12 +53,15 @@ export function connectMapRoom(mapId, handlers = {}) {
   };
 
   const connect = () => {
+    if (closed) return;
     clearTimers();
     const token = getSessionId();
-    socket = new WebSocket(wsUrl(token));
+    const connection = new WebSocket(wsUrl(token));
+    socket = connection;
     emitStatus('connecting');
 
-    socket.addEventListener('open', () => {
+    connection.addEventListener('open', () => {
+      if (closed || socket !== connection) return;
       attempt = 0;
       emitStatus('connected');
       socket.send(JSON.stringify({ type: 'join', mapId: Number(mapId) }));
@@ -69,7 +72,8 @@ export function connectMapRoom(mapId, handlers = {}) {
       }, 25000);
     });
 
-    socket.addEventListener('message', (event) => {
+    connection.addEventListener('message', (event) => {
+      if (closed || socket !== connection) return;
       let message;
       try {
         message = JSON.parse(event.data);
@@ -96,13 +100,15 @@ export function connectMapRoom(mapId, handlers = {}) {
       }
     });
 
-    socket.addEventListener('close', () => {
+    connection.addEventListener('close', () => {
+      if (closed || socket !== connection) return;
       clearTimers();
       emitStatus('disconnected');
       scheduleReconnect();
     });
 
-    socket.addEventListener('error', () => {
+    connection.addEventListener('error', () => {
+      if (closed || socket !== connection) return;
       emitStatus('error', { error: '实时连接异常' });
     });
   };
@@ -127,7 +133,12 @@ export function connectMapRoom(mapId, handlers = {}) {
         if (socket?.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'leave' }));
         }
-        socket?.close();
+        const closingSocket = socket;
+        if (closingSocket?.readyState === WebSocket.CONNECTING) {
+          closingSocket.addEventListener('open', () => closingSocket.close(), { once: true });
+        } else {
+          closingSocket?.close();
+        }
       } catch {
         // ignore
       }
