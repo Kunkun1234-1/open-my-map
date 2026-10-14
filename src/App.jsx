@@ -48,7 +48,7 @@ function Router() {
   if (route.page === 'public') return <PublicView token={route.token} />;
   if (loading) return <div className="loading-state">{t('common.loading')}</div>;
   if (!user) return <LoginPage />;
-  if (route.page === 'editor') return <MapEditor mapId={route.mapId} />;
+  if (route.page === 'editor') return <MapEditor key={route.mapId} mapId={route.mapId} />;
   return <MapLibrary />;
 }
 

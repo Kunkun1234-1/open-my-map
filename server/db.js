@@ -48,6 +48,7 @@ db.exec(`
     description TEXT NOT NULL DEFAULT '',
     geometry_json TEXT NOT NULL,
     style_json TEXT NOT NULL DEFAULT '{}',
+    position INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -154,6 +155,18 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS content_checkpoints (
+    token TEXT PRIMARY KEY,
+    map_id INTEGER NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    snapshot_json TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_checkpoints_user_map ON content_checkpoints(user_id, map_id, created_at);
+
   CREATE INDEX IF NOT EXISTS idx_layers_map_id ON layers(map_id);
   CREATE INDEX IF NOT EXISTS idx_features_layer_id ON features(layer_id);
   CREATE INDEX IF NOT EXISTS idx_attachments_feature_id ON attachments(feature_id);
@@ -202,6 +215,18 @@ function ensureVersionColumn(table) {
 ensureVersionColumn('maps');
 ensureVersionColumn('layers');
 ensureVersionColumn('features');
+
+const featureColumns = db.prepare('PRAGMA table_info(features)').all();
+if (!featureColumns.some((column) => column.name === 'position')) {
+  db.exec(`
+    ALTER TABLE features ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+    WITH ordered AS (
+      SELECT id, ROW_NUMBER() OVER (PARTITION BY layer_id ORDER BY id) - 1 AS position FROM features
+    )
+    UPDATE features SET position = (SELECT position FROM ordered WHERE ordered.id = features.id);
+  `);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_features_layer_position ON features(layer_id, position, id)');
 
 // 全局账户仅保留 admin / editor；历史 viewer 迁移为普通用户。
 db.prepare("UPDATE users SET role = 'editor' WHERE role = 'viewer'").run();
@@ -259,8 +284,8 @@ function seed() {
   const routesId = Number(layerInsert.run(mapId, '散步路线与区域', 1, JSON.stringify({ color: '#00897b' }), created, created).lastInsertRowid);
 
   const featureInsert = db.prepare(`
-    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const features = [
     [placesId, 'Point', '外滩观景平台', '傍晚看浦江与陆家嘴灯光。', { type: 'Point', coordinates: [121.4906, 31.2403] }, { color: '#1a73e8', icon: 'camera' }],
@@ -271,7 +296,8 @@ function seed() {
     [routesId, 'Polygon', '北外滩周末活动区', '滨江公共空间与活动范围。', { type: 'Polygon', coordinates: [[[121.4933, 31.2528], [121.5016, 31.2510], [121.5055, 31.2456], [121.4990, 31.2421], [121.4933, 31.2528]]] }, { color: '#009688', fillColor: '#4db6ac', fillOpacity: 0.28, weight: 3 }],
   ];
   for (const feature of features) {
-    featureInsert.run(feature[0], feature[1], feature[2], feature[3], JSON.stringify(feature[4]), JSON.stringify(feature[5]), created, created);
+    const position = Number(db.prepare('SELECT COUNT(*) AS count FROM features WHERE layer_id = ?').get(feature[0]).count);
+    featureInsert.run(feature[0], feature[1], feature[2], feature[3], JSON.stringify(feature[4]), JSON.stringify(feature[5]), position, created, created);
   }
 
   const demoHash = hashPassword('admin123');
@@ -354,7 +380,7 @@ export function getMap(id) {
   `).get(id);
   if (!map) return null;
   const layers = db.prepare('SELECT * FROM layers WHERE map_id = ? ORDER BY position, id').all(id);
-  const featureStmt = db.prepare('SELECT * FROM features WHERE layer_id = ? ORDER BY id');
+  const featureStmt = db.prepare('SELECT * FROM features WHERE layer_id = ? ORDER BY position, id');
   const attachmentRows = db.prepare(`
     SELECT a.* FROM attachments a
     JOIN features f ON f.id = a.feature_id
@@ -389,6 +415,7 @@ export function getMap(id) {
       attachments: attachmentsByFeature.get(feature.id) || [],
     })),
   }));
+  map.contentFingerprint = mapContentFingerprint(map);
   return map;
 }
 
@@ -832,6 +859,241 @@ export function setMapFavorite(user, mapId, favorite) {
 
 export function normalizeGlobalRole(role) {
   return role === 'admin' ? 'admin' : 'editor';
+}
+
+function contentError(message, status = 400, details = {}) {
+  return Object.assign(new Error(message), { status, ...details });
+}
+
+function transaction(fn) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function touchMap(mapId, updated = iso()) {
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(updated, mapId);
+}
+
+function assertPermutation(requested, existing, message) {
+  if (!Array.isArray(requested) || requested.length !== existing.length
+    || requested.some((value) => !Number.isSafeInteger(value) || value <= 0)
+    || new Set(requested).size !== requested.length
+    || requested.some((value) => !existing.includes(value))) {
+    throw contentError(message);
+  }
+}
+
+export function reorderMapLayers(mapId, layerIds) {
+  return transaction(() => {
+    const existing = db.prepare('SELECT id FROM layers WHERE map_id = ? ORDER BY position, id').all(mapId).map((row) => row.id);
+    assertPermutation(layerIds, existing, '必须提供当前地图全部图层的完整排列');
+    const updated = iso();
+    const statement = db.prepare('UPDATE layers SET position = ?, version = version + 1, updated_at = ? WHERE id = ?');
+    layerIds.forEach((layerId, position) => statement.run(position, updated, layerId));
+    touchMap(mapId, updated);
+    return getMap(mapId);
+  });
+}
+
+export function reorderLayerFeatures(mapId, layerId, featureIds) {
+  return transaction(() => {
+    if (!db.prepare('SELECT id FROM layers WHERE id = ? AND map_id = ?').get(layerId, mapId)) {
+      throw contentError('目标图层必须属于当前地图');
+    }
+    const existing = db.prepare('SELECT id FROM features WHERE layer_id = ? ORDER BY position, id').all(layerId).map((row) => row.id);
+    assertPermutation(featureIds, existing, '必须提供该图层全部要素的完整排列');
+    const updated = iso();
+    const statement = db.prepare('UPDATE features SET position = ?, version = version + 1, updated_at = ? WHERE id = ?');
+    featureIds.forEach((featureId, position) => statement.run(position, updated, featureId));
+    db.prepare('UPDATE layers SET updated_at = ?, version = version + 1 WHERE id = ?').run(updated, layerId);
+    touchMap(mapId, updated);
+    return getMap(mapId);
+  });
+}
+
+export function moveMapFeature(mapId, featureId, layerId, index) {
+  return transaction(() => {
+    const feature = db.prepare('SELECT f.* FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ? AND l.map_id = ?').get(featureId, mapId);
+    if (!feature) throw contentError('要素不存在', 404);
+    if (!db.prepare('SELECT id FROM layers WHERE id = ? AND map_id = ?').get(layerId, mapId)) {
+      throw contentError('目标图层必须属于当前地图');
+    }
+    const targetIds = db.prepare('SELECT id FROM features WHERE layer_id = ? AND id != ? ORDER BY position, id').all(layerId, featureId).map((row) => row.id);
+    if (!Number.isSafeInteger(index) || index < 0 || index > targetIds.length) throw contentError('无效要素位置');
+    targetIds.splice(index, 0, featureId);
+    const updated = iso();
+    db.prepare('UPDATE features SET layer_id = ? WHERE id = ?').run(layerId, featureId);
+    const statement = db.prepare('UPDATE features SET position = ?, updated_at = ?, version = version + 1 WHERE id = ?');
+    targetIds.forEach((itemId, position) => statement.run(position, updated, itemId));
+    if (feature.layer_id !== layerId) {
+      db.prepare('SELECT id FROM features WHERE layer_id = ? ORDER BY position, id').all(feature.layer_id)
+        .forEach((row, position) => statement.run(position, updated, row.id));
+    }
+    db.prepare('UPDATE layers SET updated_at = ?, version = version + 1 WHERE id IN (?, ?)').run(updated, feature.layer_id, layerId);
+    touchMap(mapId, updated);
+    return getMap(mapId);
+  });
+}
+
+export function updateMapLayerStyle(mapId, layerId, style, applyToFeatures) {
+  if (!style || typeof style !== 'object' || Array.isArray(style)) throw contentError('无效图层样式');
+  const allowed = new Set(['color', 'fillColor', 'fillOpacity', 'opacity', 'weight', 'icon']);
+  for (const [key, value] of Object.entries(style)) {
+    if (!allowed.has(key)) throw contentError('不支持的图层样式字段');
+    if (['color', 'fillColor', 'icon'].includes(key) && (typeof value !== 'string' || !value || value.length > 80)) {
+      throw contentError('无效图层颜色或图标');
+    }
+    if (['fillOpacity', 'opacity'].includes(key) && (!Number.isFinite(value) || value < 0 || value > 1)) throw contentError('透明度应为 0 到 1');
+    if (key === 'weight' && (!Number.isFinite(value) || value < 1 || value > 30)) throw contentError('线宽应为 1 到 30');
+  }
+  if (typeof applyToFeatures !== 'boolean') throw contentError('applyToFeatures 必须为布尔值');
+  return transaction(() => {
+    const layer = db.prepare('SELECT * FROM layers WHERE id = ? AND map_id = ?').get(layerId, mapId);
+    if (!layer) throw contentError('图层不存在', 404);
+    const updated = iso();
+    db.prepare('UPDATE layers SET style_json = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+      .run(JSON.stringify({ ...parseJson(layer.style_json), ...style }), updated, layerId);
+    if (applyToFeatures) {
+      const statement = db.prepare('UPDATE features SET style_json = ?, updated_at = ?, version = version + 1 WHERE id = ?');
+      for (const feature of db.prepare('SELECT * FROM features WHERE layer_id = ?').all(layerId)) {
+        const patch = { ...style };
+        if (feature.type !== 'Point') delete patch.icon;
+        if (feature.type !== 'Polygon') { delete patch.fillColor; delete patch.fillOpacity; }
+        if (feature.type === 'Polygon' && style.color && !Object.hasOwn(style, 'fillColor')) patch.fillColor = style.color;
+        statement.run(JSON.stringify({ ...parseJson(feature.style_json), ...patch }), updated, feature.id);
+      }
+    }
+    touchMap(mapId, updated);
+    return getMap(mapId);
+  });
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function snapshotContent(map) {
+  return {
+    name: map.name, description: map.description, owner: map.owner, base_map: map.base_map,
+    layers: map.layers.map((layer) => ({
+      id: layer.id, name: layer.name, visible: layer.visible, position: layer.position,
+      style: layer.style, created_at: layer.created_at, version: layer.version,
+      features: layer.features.map((feature) => ({
+        id: feature.id, type: feature.type, name: feature.name, description: feature.description,
+        geometry: feature.geometry, style: feature.style, position: feature.position,
+        created_at: feature.created_at, version: feature.version,
+        attachmentIds: feature.attachments.map((attachment) => attachment.id).sort((a, b) => a - b),
+      })),
+    })),
+  };
+}
+
+function fingerprintSnapshot(snapshot) {
+  const content = {
+    ...snapshot,
+    layers: snapshot.layers.map(({ created_at: _created, version: _version, ...layer }) => ({
+      ...layer,
+      features: layer.features.map(({ created_at: _featureCreated, version: _featureVersion, ...feature }) => feature),
+    })),
+  };
+  return crypto.createHash('sha256').update(stableJson(content)).digest('hex');
+}
+
+export function mapContentFingerprint(map) {
+  return fingerprintSnapshot(snapshotContent(map));
+}
+
+export function createContentCheckpoint(mapId, userId) {
+  const map = getMap(mapId);
+  if (!map) throw contentError('地图不存在', 404);
+  const snapshot = snapshotContent(map);
+  const fingerprint = fingerprintSnapshot(snapshot);
+  const token = crypto.randomBytes(24).toString('base64url');
+  const created = iso();
+  const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  transaction(() => {
+    db.prepare('DELETE FROM content_checkpoints WHERE expires_at <= ?').run(created);
+    db.prepare('INSERT INTO content_checkpoints (token, map_id, user_id, snapshot_json, fingerprint, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(token, mapId, userId, JSON.stringify(snapshot), fingerprint, created, expires);
+    db.prepare(`DELETE FROM content_checkpoints WHERE map_id = ? AND user_id = ? AND token NOT IN (
+      SELECT token FROM content_checkpoints WHERE map_id = ? AND user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 50
+    )`).run(mapId, userId, mapId, userId);
+  });
+  return { token, fingerprint, expiresAt: expires };
+}
+
+export function restoreContentCheckpoint(mapId, userId, token, expectedFingerprint) {
+  if (typeof token !== 'string' || typeof expectedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(expectedFingerprint)) {
+    throw contentError('恢复历史需要有效 checkpoint 和当前内容指纹');
+  }
+  return transaction(() => {
+    const checkpoint = db.prepare('SELECT * FROM content_checkpoints WHERE token = ? AND map_id = ? AND user_id = ? AND expires_at > ?')
+      .get(token, mapId, userId, iso());
+    if (!checkpoint) throw contentError('历史记录不存在或已过期', 404);
+    const latest = getMap(mapId);
+    if (!latest) throw contentError('地图不存在', 404);
+    const currentFingerprint = mapContentFingerprint(latest);
+    if (currentFingerprint !== expectedFingerprint) {
+      throw contentError('地图已被更新，请基于最新内容继续编辑', 409, { conflict: true, latest, currentFingerprint });
+    }
+    const snapshot = JSON.parse(checkpoint.snapshot_json);
+    const currentMedia = latest.layers.flatMap((layer) => layer.features.flatMap((feature) => feature.attachments.map((item) => [item.id, feature.id]))).sort((a, b) => a[0] - b[0]);
+    const targetMedia = snapshot.layers.flatMap((layer) => layer.features.flatMap((feature) => feature.attachmentIds.map((itemId) => [itemId, feature.id]))).sort((a, b) => a[0] - b[0]);
+    if (JSON.stringify(currentMedia) !== JSON.stringify(targetMedia)) {
+      throw contentError('附件已变化，无法恢复该历史记录；当前地图和媒体保持不变', 409, { code: 'HISTORY_MEDIA_CHANGED', latest, currentFingerprint });
+    }
+    // Snapshot IDs are server-generated. Check again before inserting deleted IDs so
+    // a checkpoint can never move an entity out of another map.
+    for (const layer of snapshot.layers) {
+      const existing = db.prepare('SELECT map_id FROM layers WHERE id = ?').get(layer.id);
+      if (existing && existing.map_id !== mapId) throw contentError('历史图层与其他地图冲突', 409);
+      for (const feature of layer.features) {
+        const existingFeature = db.prepare('SELECT l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?').get(feature.id);
+        if (existingFeature && existingFeature.map_id !== mapId) throw contentError('历史要素与其他地图冲突', 409);
+      }
+    }
+    const updated = iso();
+    const layerIds = new Set(snapshot.layers.map((layer) => layer.id));
+    const featureIds = new Set(snapshot.layers.flatMap((layer) => layer.features.map((feature) => feature.id)));
+    const upsertLayer = db.prepare(`INSERT INTO layers (id, map_id, name, visible, position, style_json, created_at, updated_at, version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, visible = excluded.visible, position = excluded.position,
+        style_json = excluded.style_json, updated_at = excluded.updated_at, version = layers.version + 1`);
+    for (const layer of snapshot.layers) {
+      upsertLayer.run(layer.id, mapId, layer.name, Number(layer.visible), layer.position, JSON.stringify(layer.style), layer.created_at, updated, layer.version + 1);
+    }
+    const upsertFeature = db.prepare(`INSERT INTO features (id, layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at, version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET layer_id = excluded.layer_id, type = excluded.type, name = excluded.name,
+        description = excluded.description, geometry_json = excluded.geometry_json, style_json = excluded.style_json,
+        position = excluded.position, updated_at = excluded.updated_at, version = features.version + 1`);
+    for (const layer of snapshot.layers) {
+      for (const feature of layer.features) {
+        upsertFeature.run(feature.id, layer.id, feature.type, feature.name, feature.description, JSON.stringify(feature.geometry), JSON.stringify(feature.style), feature.position, feature.created_at, updated, feature.version + 1);
+      }
+    }
+    for (const layer of latest.layers) {
+      for (const feature of layer.features) {
+        if (!featureIds.has(feature.id)) db.prepare('DELETE FROM features WHERE id = ?').run(feature.id);
+      }
+      if (!layerIds.has(layer.id)) db.prepare('DELETE FROM layers WHERE id = ?').run(layer.id);
+    }
+    db.prepare('UPDATE maps SET name = ?, description = ?, owner = ?, base_map = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+      .run(snapshot.name, snapshot.description, snapshot.owner, snapshot.base_map, updated, mapId);
+    const map = getMap(mapId);
+    return { map, fingerprint: mapContentFingerprint(map) };
+  });
 }
 
 export const now = iso;

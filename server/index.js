@@ -12,6 +12,8 @@ import {
   listVisibleMaps, listVisibleProjects, createProjectOwnedBy, inviteProjectMember,
   listProjectMembers, updateProjectMemberRole, removeProjectMember, transferProjectOwnership,
   hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, setMapFavorite,
+  reorderMapLayers, reorderLayerFeatures, moveMapFeature, updateMapLayerStyle,
+  createContentCheckpoint, restoreContentCheckpoint,
 } from './db.js';
 import {
   loadSession, loginWithEmail, logoutSession, registerUser, updateProfile, changePassword,
@@ -113,6 +115,39 @@ function assertVersionMatch(req, res, currentVersion, latestPayload) {
   return false;
 }
 
+function assertFingerprintMatch(req, res, map) {
+  const expected = req.body?.expectedFingerprint;
+  if (expected === undefined) return true;
+  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected)) {
+    res.status(400).json({ error: '无效地图内容指纹' });
+    return false;
+  }
+  if (expected === map.contentFingerprint) return true;
+  res.status(409).json({ error: '地图已被更新，请基于最新内容继续编辑', conflict: true, latest: map, currentFingerprint: map.contentFingerprint });
+  return false;
+}
+
+// Fingerprint guarding is opt-in for ordinary editing and mandatory for history
+// restore. It also prevents other collaborators' edits entering a local history
+// entry between capturing its checkpoint and executing its mutation.
+app.use((req, res, next) => {
+  if (!['POST', 'PATCH', 'DELETE'].includes(req.method) || req.body?.expectedFingerprint === undefined) return next();
+  let mapId;
+  let decodedPath;
+  try { decodedPath = decodeURIComponent(req.path); } catch { return next(); }
+  const mapMatch = /^\/api\/maps\/([^/]+)(?:\/(?:layers|reorder|features\/reorder))?\/?$/.exec(decodedPath);
+  const layerMatch = /^\/api\/layers\/([^/]+)(?:\/(?:style|features(?:\/bulk)?))?\/?$/.exec(decodedPath);
+  const featureMatch = /^\/api\/features\/([^/]+)(?:\/move)?\/?$/.exec(decodedPath);
+  if (mapMatch) mapId = id(mapMatch[1]);
+  else if (layerMatch) mapId = db.prepare('SELECT map_id FROM layers WHERE id = ?').get(id(layerMatch[1]))?.map_id;
+  else if (featureMatch) mapId = db.prepare('SELECT l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?').get(id(featureMatch[1]))?.map_id;
+  if (mapId) {
+    if (!assertEditor(req, res, mapId)) return;
+    if (!assertFingerprintMatch(req, res, getMap(mapId))) return;
+  }
+  next();
+});
+
 function findFeatureInMap(map, featureId) {
   for (const layer of map?.layers || []) {
     const feature = (layer.features || []).find((item) => item.id === featureId);
@@ -126,7 +161,11 @@ function findLayerInMap(map, layerId) {
 }
 
 function emitMapOp(mapId, action, actor, { entity = null, entityId = null, version = null } = {}) {
-  broadcastMapOp(mapId, createMapOp({ action, actor, entity, entityId, version }));
+  const map = getMap(mapId);
+  broadcastMapOp(mapId, {
+    ...createMapOp({ action, actor, entity, entityId, version }),
+    ...(map ? { mapVersion: map.version, contentFingerprint: map.contentFingerprint } : {}),
+  });
 }
 
 function safeUnlink(filePath) {
@@ -441,6 +480,44 @@ app.delete('/api/maps/:mapId', (req, res) => {
   res.status(204).end();
 });
 
+app.post('/api/maps/:mapId/checkpoints', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  if (!assertFingerprintMatch(req, res, getMap(mapId))) return;
+  res.status(201).json(createContentCheckpoint(mapId, req.user.id));
+});
+
+app.post('/api/maps/:mapId/restore-checkpoint', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const result = restoreContentCheckpoint(mapId, req.user.id, req.body?.token, req.body?.expectedFingerprint);
+  audit('restore-history', 'map', mapId, '原子恢复当前用户的地图内容历史');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: result.map, version: result.map.version });
+  res.json(result);
+});
+
+app.post('/api/maps/:mapId/reorder', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const latest = getMap(mapId);
+  if (!assertVersionMatch(req, res, latest.version, latest)) return;
+  const map = reorderMapLayers(mapId, req.body?.layerIds);
+  audit('reorder', 'map', mapId, '调整图层顺序');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.json(map);
+});
+
+app.post('/api/maps/:mapId/features/reorder', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const latest = getMap(mapId);
+  if (!assertVersionMatch(req, res, latest.version, latest)) return;
+  const map = reorderLayerFeatures(mapId, req.body?.layerId, req.body?.featureIds);
+  audit('reorder', 'layer', req.body.layerId, '调整要素顺序');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.json(map);
+});
+
 app.post('/api/maps/:mapId/layers', (req, res) => {
   const mapId = id(req.params.mapId);
   if (!db.prepare('SELECT 1 FROM maps WHERE id = ?').get(mapId)) return notFound(res, '地图不存在');
@@ -457,7 +534,7 @@ app.post('/api/maps/:mapId/layers', (req, res) => {
   const map = getMap(mapId);
   const layer = findLayerInMap(map, Number(result.lastInsertRowid));
   emitMapOp(mapId, 'layer.created', req.user, { entity: layer, version: layer?.version });
-  res.status(201).json(map);
+  res.status(201).json({ ...map, createdLayerId: Number(result.lastInsertRowid) });
 });
 
 app.patch('/api/layers/:layerId', (req, res) => {
@@ -484,12 +561,25 @@ app.patch('/api/layers/:layerId', (req, res) => {
     fields.push('version = version + 1', 'updated_at = ?');
     values.push(now(), layerId);
     db.prepare(`UPDATE layers SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
     audit('update', 'layer', layerId, `更新图层字段 ${fields.slice(0, -2).join(', ')}`);
   }
   const map = getMap(layer.map_id);
   const updated = findLayerInMap(map, layerId);
   emitMapOp(layer.map_id, 'layer.updated', req.user, { entity: updated, version: updated?.version });
+  res.json(map);
+});
+
+app.patch('/api/layers/:layerId/style', (req, res) => {
+  const layerId = id(req.params.layerId);
+  const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
+  if (!layer) return notFound(res, '图层不存在');
+  if (!assertEditor(req, res, layer.map_id)) return;
+  const latest = getMap(layer.map_id);
+  if (!assertVersionMatch(req, res, layer.version, findLayerInMap(latest, layerId))) return;
+  const map = updateMapLayerStyle(layer.map_id, layerId, req.body?.style, req.body?.applyToFeatures ?? false);
+  audit('style', 'layer', layerId, '统一图层样式');
+  emitMapOp(layer.map_id, 'map.updated', req.user, { entity: map, version: map.version });
   res.json(map);
 });
 
@@ -507,9 +597,10 @@ app.delete('/api/layers/:layerId', (req, res) => {
   `).all(layerId);
   db.prepare('DELETE FROM layers WHERE id = ?').run(layerId);
   deleteStoredFiles(attachments);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
   audit('delete', 'layer', layerId, `从地图 ${layer.map_id} 删除`);
   emitMapOp(layer.map_id, 'layer.deleted', req.user, { entityId: layerId });
+  if (req.body?.expectedFingerprint !== undefined) return res.json(getMap(layer.map_id));
   res.status(204).end();
 });
 
@@ -518,10 +609,11 @@ function createFeature(layerId, payload) {
   const geometry = payload.geometry || {};
   const type = geometry.type || payload.type;
   if (!['Point', 'LineString', 'Polygon'].includes(type)) throw new Error('不支持的几何类型');
+  const position = Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM features WHERE layer_id = ?').get(layerId).position);
   const result = db.prepare(`
-    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, created_at, updated_at, version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-  `).run(layerId, type, String(payload.name || '无标题要素').slice(0, 180), String(payload.description || ''), JSON.stringify(geometry), JSON.stringify(payload.style || {}), created, created);
+    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at, version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(layerId, type, String(payload.name || '无标题要素').slice(0, 180), String(payload.description || ''), JSON.stringify(geometry), JSON.stringify(payload.style || {}), position, created, created);
   return Number(result.lastInsertRowid);
 }
 
@@ -531,12 +623,12 @@ app.post('/api/layers/:layerId/features', (req, res) => {
   if (!layer) return notFound(res, '图层不存在');
   if (!assertEditor(req, res, layer.map_id)) return;
   const featureId = createFeature(layerId, req.body);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
   audit('create', 'feature', featureId, `添加到图层 ${layerId}`);
   const map = getMap(layer.map_id);
   const feature = findFeatureInMap(map, featureId);
   emitMapOp(layer.map_id, 'feature.created', req.user, { entity: feature, version: feature?.version });
-  res.status(201).json(map);
+  res.status(201).json({ ...map, createdFeatureId: featureId });
 });
 
 app.post('/api/layers/:layerId/features/bulk', (req, res) => {
@@ -552,7 +644,7 @@ app.post('/api/layers/:layerId/features/bulk', (req, res) => {
       INSERT INTO import_jobs (map_id, layer_id, file_name, format, row_count, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'completed', ?)
     `).run(layer.map_id, layerId, String(req.body.fileName || 'import'), String(req.body.format || 'GeoJSON').toUpperCase(), features.length, now());
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
@@ -595,17 +687,34 @@ app.patch('/api/features/:featureId', (req, res) => {
     if (!target) return res.status(400).json({ error: '目标图层必须属于当前地图' });
     fields.push('layer_id = ?');
     values.push(targetLayerId);
+    if (targetLayerId !== feature.layer_id) {
+      fields.push('position = ?');
+      values.push(Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM features WHERE layer_id = ?').get(targetLayerId).position));
+    }
   }
   if (fields.length) {
     fields.push('version = version + 1', 'updated_at = ?');
     values.push(now(), featureId);
     db.prepare(`UPDATE features SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), feature.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
     audit('update', 'feature', featureId, `更新字段 ${fields.slice(0, -2).join(', ')}`);
   }
   const map = getMap(feature.map_id);
   const updated = findFeatureInMap(map, featureId);
   emitMapOp(feature.map_id, 'feature.updated', req.user, { entity: updated, version: updated?.version });
+  res.json(map);
+});
+
+app.post('/api/features/:featureId/move', (req, res) => {
+  const featureId = id(req.params.featureId);
+  const feature = db.prepare('SELECT f.*, l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?').get(featureId);
+  if (!feature) return notFound(res, '要素不存在');
+  if (!assertEditor(req, res, feature.map_id)) return;
+  const latest = getMap(feature.map_id);
+  if (!assertVersionMatch(req, res, feature.version, findFeatureInMap(latest, featureId))) return;
+  const map = moveMapFeature(feature.map_id, featureId, req.body?.layerId, req.body?.index);
+  audit('move', 'feature', featureId, `移动到图层 ${req.body.layerId}`);
+  emitMapOp(feature.map_id, 'map.updated', req.user, { entity: map, version: map.version });
   res.json(map);
 });
 
@@ -672,7 +781,7 @@ app.post('/api/features/:featureId/attachments', mediaUpload.array('files', MAX_
       item.moved = true;
       insert.run(featureId, item.kind, item.originalName, item.storedName, item.mimeType, item.file.size, now());
     }
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), feature.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
     db.prepare('UPDATE features SET version = version + 1, updated_at = ? WHERE id = ?').run(now(), featureId);
     audit('upload', 'feature', featureId, `上传 ${prepared.length} 个图片/视频附件`);
     db.exec('COMMIT');
@@ -703,7 +812,7 @@ app.delete('/api/attachments/:attachmentId', (req, res) => {
   if (!attachment) return notFound(res, '附件不存在');
   if (!assertEditor(req, res, attachment.map_id)) return;
   db.prepare('DELETE FROM attachments WHERE id = ?').run(attachmentId);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), attachment.map_id);
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), attachment.map_id);
   db.prepare('UPDATE features SET version = version + 1, updated_at = ? WHERE id = ?').run(now(), attachment.feature_id);
   audit('delete', 'attachment', attachmentId, `从“${attachment.feature_name}”删除附件`);
   deleteStoredFiles([attachment]);
@@ -727,9 +836,10 @@ app.delete('/api/features/:featureId', (req, res) => {
   const attachments = db.prepare('SELECT stored_name FROM attachments WHERE feature_id = ?').all(featureId);
   db.prepare('DELETE FROM features WHERE id = ?').run(featureId);
   deleteStoredFiles(attachments);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), feature.map_id);
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
   audit('delete', 'feature', featureId, `删除“${feature.name}”`);
   emitMapOp(feature.map_id, 'feature.deleted', req.user, { entityId: featureId });
+  if (req.body?.expectedFingerprint !== undefined) return res.json(getMap(feature.map_id));
   res.status(204).end();
 });
 
@@ -913,7 +1023,13 @@ app.use((error, req, res, next) => {
     : isFileCountLimit
       ? `每次最多上传 ${MAX_FILES_PER_UPLOAD} 个文件`
       : error.message || '请求处理失败';
-  res.status(status).json({ error: message });
+  res.status(status).json({
+    error: message,
+    ...(error.code ? { code: error.code } : {}),
+    ...(error.conflict ? { conflict: true } : {}),
+    ...(error.latest ? { latest: error.latest } : {}),
+    ...(error.currentFingerprint ? { currentFingerprint: error.currentFingerprint } : {}),
+  });
 });
 
 const server = http.createServer(app);

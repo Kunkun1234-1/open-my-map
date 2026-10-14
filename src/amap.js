@@ -123,46 +123,139 @@ async function mapService(pluginName) {
 
 function storagePosition(position) {
   if (!position) return null;
-  const lng = Number(position.getLng?.() ?? position.lng);
-  const lat = Number(position.getLat?.() ?? position.lat);
+  const source = typeof position === 'string' ? position.split(',') : position;
+  const lng = Number(Array.isArray(source) ? source[0] : source.getLng?.() ?? source.lng);
+  const lat = Number(Array.isArray(source) ? source[1] : source.getLat?.() ?? source.lat);
   return Number.isFinite(lng) && Number.isFinite(lat) ? toStorageLngLat(lng, lat) : null;
 }
 
-function poiResult(poi, index) {
+function serviceText(value) {
+  return typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+}
+
+function webLink(value) {
+  const url = serviceText(value);
+  if (!url) return '';
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`);
+    return ['https:', 'http:'].includes(parsed.protocol) ? parsed.href : '';
+  } catch { return ''; }
+}
+
+function poiResult(poi, index = 0) {
+  const poiId = serviceText(poi.id);
+  const category = serviceText(poi.type);
+  const photos = (Array.isArray(poi.photos) ? poi.photos : []).map((photo) => ({
+    url: webLink(photo.url), title: serviceText(photo.title),
+  })).filter((photo) => photo.url);
   return {
-    id: `amap-${poi.id || `${poi.name}-${index}`}`,
-    name: poi.name || '',
-    address: [poi.pname, poi.cityname, poi.adname, typeof poi.address === 'string' ? poi.address : ''].filter(Boolean).join(' '),
+    id: `amap-${poiId || `${poi.name}-${index}`}`,
+    poiId: poiId || null,
+    name: serviceText(poi.name),
+    address: [poi.pname, poi.cityname, poi.adname, poi.address].map(serviceText).filter(Boolean).join(' '),
     position: storagePosition(poi.location),
-    type: poi.type || '',
-    city: poi.adcode || poi.cityname || '',
+    type: category,
+    category,
+    city: serviceText(poi.adcode || poi.cityname),
+    phone: serviceText(poi.tel || poi.business?.tel),
+    website: webLink(poi.website || poi.business?.website),
+    businessHours: serviceText(poi.business?.opentime_week || poi.business?.opentime_today || poi.businessHours || poi.businesshours),
+    photos,
+    coordinateSystem: 'WGS84',
+    source: 'AMap',
     index: index + 1,
   };
 }
 
-function searchService(service, query, resultKey) {
+function serviceRequest(request, fallbackMessage = '地图搜索暂不可用，请检查服务权限。') {
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => reject(new Error('地图搜索超时，请稍后重试。')), 12_000);
-    service.search(query, (status, result) => {
+    try {
+      request((status, result) => {
+        window.clearTimeout(timeout);
+        if (status === 'no_data') { resolve(null); return; }
+        if (status !== 'complete') { reject(new Error(result?.info || fallbackMessage)); return; }
+        resolve(result);
+      });
+    } catch (error) {
       window.clearTimeout(timeout);
-      if (status === 'no_data') { resolve([]); return; }
-      if (status !== 'complete') { reject(new Error(result?.info || '地图搜索暂不可用，请检查服务权限。')); return; }
-      const rows = resultKey === 'tips' ? result.tips : result.poiList?.pois;
-      resolve((rows || []).map(poiResult));
-    });
+      reject(error);
+    }
   });
 }
 
 export async function suggestAMapPlaces(query) {
-  if (!query.trim()) return [];
+  if (!String(query).trim()) return [];
   const AMap = await mapService('AutoComplete');
-  return searchService(new AMap.AutoComplete({ datatype: 'all' }), query, 'tips');
+  const service = new AMap.AutoComplete({ datatype: 'all' });
+  const result = await serviceRequest((callback) => service.search(query, callback));
+  return (result?.tips || []).map(poiResult);
 }
 
-export async function searchAMapPlaces(query) {
+function searchBounds(AMap, bounds) {
+  const southWest = bounds?.southWest || bounds?.southwest || bounds?.[0]
+    || (bounds?.west !== undefined ? [bounds.west, bounds.south] : null);
+  const northEast = bounds?.northEast || bounds?.northeast || bounds?.[1]
+    || (bounds?.east !== undefined ? [bounds.east, bounds.north] : null);
+  if (!Array.isArray(southWest) || !Array.isArray(northEast)
+    || [...southWest, ...northEast].length !== 4
+    || ![...southWest, ...northEast].every((value) => Number.isFinite(Number(value)))) {
+    throw new Error('当前地图范围不可用，请稍后再试。');
+  }
+  return new AMap.Bounds(toDisplayLngLat(...southWest), toDisplayLngLat(...northEast));
+}
+
+export async function searchAMapPlaces(query, options) {
+  const structured = options !== undefined;
+  const settings = options || {};
+  const page = Math.min(100, Math.max(1, Math.floor(Number(settings.page) || 1)));
+  const pageSize = 10;
+  if (!String(query).trim()) return structured ? { places: [], total: 0, page, pageSize } : [];
   const AMap = await mapService('PlaceSearch');
-  const rows = await searchService(new AMap.PlaceSearch({ pageSize: 10, extensions: 'base' }), query, 'pois');
-  return rows.filter((row) => row.position).map((row, index) => ({ ...row, index: index + 1 }));
+  const service = new AMap.PlaceSearch({
+    pageSize, pageIndex: page, extensions: 'all', ...(settings.city ? { city: settings.city } : {}),
+  });
+  const result = await serviceRequest((callback) => {
+    if (settings.bounds) service.searchInBounds(query, searchBounds(AMap, settings.bounds), callback);
+    else service.search(query, callback);
+  });
+  const places = (result?.poiList?.pois || []).map(poiResult).filter((row) => row.position)
+    .map((row, index) => ({ ...row, index: ((page - 1) * pageSize) + index + 1 }));
+  const total = Number.isFinite(Number(result?.poiList?.count)) ? Number(result.poiList.count) : places.length;
+  return structured ? { places, total, page, pageSize } : places;
+}
+
+export async function getAMapPlace(id) {
+  const poiId = String(id || '').replace(/^amap-/, '').trim();
+  if (!poiId) throw new Error('缺少地点标识。');
+  const AMap = await mapService('PlaceSearch');
+  const service = new AMap.PlaceSearch({ extensions: 'all' });
+  const result = await serviceRequest((callback) => service.getDetails(poiId, callback), '地点详情暂不可用。');
+  const poi = result?.poiList?.pois?.[0];
+  if (!poi) throw new Error('暂未找到此地点的详细资料。');
+  return poiResult(poi);
+}
+
+export async function reverseGeocodeAMap(position) {
+  if (!Array.isArray(position) || position.length !== 2 || !position.every((value) => Number.isFinite(Number(value)))) {
+    throw new Error('地点坐标无效。');
+  }
+  const AMap = await mapService('Geocoder');
+  const service = new AMap.Geocoder({ extensions: 'all' });
+  const result = await serviceRequest((callback) => service.getAddress(toDisplayLngLat(...position), callback), '地址解析暂不可用。');
+  const address = result?.regeocode;
+  if (!address) throw new Error('暂未找到此位置的地址。');
+  const nearest = (address.pois || [])[0];
+  return {
+    id: `coordinate-${position.join('-')}`,
+    poiId: null,
+    name: serviceText(address.addressComponent?.building?.name) || '选定的位置',
+    address: serviceText(address.formattedAddress),
+    position: position.map(Number),
+    type: '', category: '', phone: '', website: '', businessHours: '', photos: [],
+    nearbyPlace: nearest ? poiResult(nearest) : null,
+    coordinateSystem: 'WGS84', source: 'AMap', index: 1,
+  };
 }
 
 export async function routeAMap(points, travelMode = 'driving') {
