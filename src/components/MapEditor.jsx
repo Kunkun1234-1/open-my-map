@@ -581,16 +581,12 @@ export default function MapEditor({ mapId }) {
         if (status === 'error' && detail?.error) setToast(detail.error);
       },
       onOp: (op) => {
-        setMapData((current) => {
-          if (!current) return current;
-          const next = applyMapOp(current, op);
-          if (next === null) {
-            setToast('该地图已被删除');
-            navigate('/');
-            return current;
-          }
-          return next;
-        });
+        if (op.action === 'map.deleted') {
+          setToast('该地图已被删除');
+          navigate('/');
+          return;
+        }
+        setMapData((current) => current ? applyMapOp(current, op) : current);
         if (op.actor?.name) {
           setToast(`${op.actor.name} 更新了地图`);
         }
