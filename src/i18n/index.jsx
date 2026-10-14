@@ -1,9 +1,10 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { en } from './en.js';
 import { zh } from './zh.js';
+import { dashboardEn, dashboardZh } from './dashboard.js';
 
 const STORAGE_KEY = 'open-my-map-lang';
-const catalogs = { zh, en };
+const catalogs = { zh: { ...zh, dashboard: dashboardZh }, en: { ...en, dashboard: dashboardEn } };
 
 const I18nContext = createContext({
   lang: 'zh',

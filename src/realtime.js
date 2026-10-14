@@ -53,12 +53,15 @@ export function connectMapRoom(mapId, handlers = {}) {
   };
 
   const connect = () => {
+    if (closed) return;
     clearTimers();
     const token = getSessionId();
-    socket = new WebSocket(wsUrl(token));
+    const connection = new WebSocket(wsUrl(token));
+    socket = connection;
     emitStatus('connecting');
 
-    socket.addEventListener('open', () => {
+    connection.addEventListener('open', () => {
+      if (closed || socket !== connection) return;
       attempt = 0;
       emitStatus('connected');
       socket.send(JSON.stringify({ type: 'join', mapId: Number(mapId) }));
@@ -69,7 +72,8 @@ export function connectMapRoom(mapId, handlers = {}) {
       }, 25000);
     });
 
-    socket.addEventListener('message', (event) => {
+    connection.addEventListener('message', (event) => {
+      if (closed || socket !== connection) return;
       let message;
       try {
         message = JSON.parse(event.data);
@@ -96,13 +100,15 @@ export function connectMapRoom(mapId, handlers = {}) {
       }
     });
 
-    socket.addEventListener('close', () => {
+    connection.addEventListener('close', () => {
+      if (closed || socket !== connection) return;
       clearTimers();
       emitStatus('disconnected');
       scheduleReconnect();
     });
 
-    socket.addEventListener('error', () => {
+    connection.addEventListener('error', () => {
+      if (closed || socket !== connection) return;
       emitStatus('error', { error: '实时连接异常' });
     });
   };
@@ -127,7 +133,12 @@ export function connectMapRoom(mapId, handlers = {}) {
         if (socket?.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'leave' }));
         }
-        socket?.close();
+        const closingSocket = socket;
+        if (closingSocket?.readyState === WebSocket.CONNECTING) {
+          closingSocket.addEventListener('open', () => closingSocket.close(), { once: true });
+        } else {
+          closingSocket?.close();
+        }
       } catch {
         // ignore
       }
@@ -137,6 +148,31 @@ export function connectMapRoom(mapId, handlers = {}) {
 
 export function applyMapOp(mapData, op) {
   if (!mapData || !op) return mapData;
+  if (op.mapId != null && String(op.mapId) !== String(mapData.id)) return mapData;
+  const olderVersion = (incoming, current) => incoming != null && current != null
+    && Number.isFinite(Number(incoming)) && Number.isFinite(Number(current))
+    && Number(incoming) < Number(current);
+  // The envelope version is the map's version; op.version remains the version
+  // of the feature or layer. Compare only versions of the same entity type.
+  if (op.action !== 'map.deleted' && olderVersion(op.mapVersion, mapData.version)) return mapData;
+  const ordered = (items) => [...items].sort((left, right) => {
+    const leftPosition = Number.isFinite(left.position) ? left.position : Infinity;
+    const rightPosition = Number.isFinite(right.position) ? right.position : Infinity;
+    if (leftPosition !== rightPosition) return leftPosition - rightPosition;
+    // Legacy rows without positions retain their existing order.
+    if (leftPosition === Infinity) return 0;
+    return Number(left.id) - Number(right.id);
+  });
+  const currentLayers = new Map((mapData.layers || []).map((layer) => [layer.id, layer]));
+  const currentFeatures = new Map((mapData.layers || []).flatMap((layer) => (layer.features || []).map((feature) => [feature.id, feature])));
+  const snapshotDowngradesEntities = (layers) => layers.some((layer) => {
+    const currentLayer = currentLayers.get(layer.id);
+    if (olderVersion(layer.version, currentLayer?.version)) return true;
+    return (layer.features || []).some((feature) => {
+      const currentFeature = currentFeatures.get(feature.id);
+      return olderVersion(feature.version, currentFeature?.version);
+    });
+  });
   const next = {
     ...mapData,
     layers: (mapData.layers || []).map((layer) => ({
@@ -144,62 +180,84 @@ export function applyMapOp(mapData, op) {
       features: [...(layer.features || [])],
     })),
   };
+  const withMapMetadata = (data) => ({
+    ...data,
+    ...(op.mapVersion != null && Number.isFinite(Number(op.mapVersion)) ? { version: Number(op.mapVersion) } : {}),
+    ...(typeof op.contentFingerprint === 'string' ? { contentFingerprint: op.contentFingerprint } : {}),
+  });
 
   const upsertFeature = (entity) => {
-    if (!entity?.id) return;
-    const targetLayerId = entity.layerId ?? entity.layer_id;
+    if (!entity?.id) return false;
+    const currentLayer = next.layers.find((layer) => layer.features.some((feature) => feature.id === entity.id));
+    const current = currentLayer?.features.find((feature) => feature.id === entity.id);
+    if (olderVersion(entity.version ?? op.version, current?.version)) return false;
+    const targetLayerId = entity.layerId ?? entity.layer_id ?? currentLayer?.id;
+    if (!next.layers.some((layer) => layer.id === targetLayerId)) return false;
+    const normalized = { ...current, ...entity };
+    if (entity.version == null && op.version != null) normalized.version = op.version;
+    // Replace an existing row in place, then sort by persisted positions.
+    // Editing its name, geometry, or attachments must not append it to the end.
     next.layers = next.layers.map((layer) => ({
       ...layer,
-      features: layer.features.filter((feature) => feature.id !== entity.id),
+      features: layer.id === targetLayerId
+        ? ordered(currentLayer?.id === targetLayerId
+          ? layer.features.map((feature) => feature.id === entity.id ? normalized : feature)
+          : [...layer.features, normalized])
+        : layer.features.filter((feature) => feature.id !== entity.id),
     }));
-    next.layers = next.layers.map((layer) => {
-      if (layer.id !== targetLayerId) return layer;
-      return { ...layer, features: [...layer.features, entity] };
-    });
+    return true;
   };
 
   const upsertLayer = (entity) => {
-    if (!entity?.id) return;
+    if (!entity?.id) return false;
     const index = next.layers.findIndex((layer) => layer.id === entity.id);
+    const current = next.layers[index];
+    if (olderVersion(entity.version ?? op.version, current?.version) || snapshotDowngradesEntities([entity])) return false;
     const normalized = {
+      ...current,
       ...entity,
-      features: entity.features || (index >= 0 ? next.layers[index].features : []),
+      features: ordered(entity.features || current?.features || []),
     };
+    if (entity.version == null && op.version != null) normalized.version = op.version;
     if (index >= 0) next.layers[index] = normalized;
     else next.layers = [...next.layers, normalized];
+    next.layers = ordered(next.layers);
+    return true;
   };
 
   switch (op.action) {
     case 'map.updated':
       if (op.entity) {
-        return {
+        if ((op.entity.id != null && op.entity.id !== mapData.id)
+          || olderVersion(op.entity.version ?? op.version, mapData.version)
+          || (op.entity.layers && snapshotDowngradesEntities(op.entity.layers))) return mapData;
+        return withMapMetadata({
+          ...mapData,
           ...op.entity,
-          layers: op.entity.layers || next.layers,
-        };
+          layers: ordered(op.entity.layers || next.layers).map((layer) => ({ ...layer, features: ordered(layer.features || []) })),
+        });
       }
-      return next;
+      return mapData;
     case 'map.deleted':
       return null;
     case 'layer.created':
     case 'layer.updated':
-      upsertLayer(op.entity);
-      return next;
+      return upsertLayer(op.entity) ? withMapMetadata(next) : mapData;
     case 'layer.deleted':
       next.layers = next.layers.filter((layer) => layer.id !== op.entityId);
-      return next;
+      return withMapMetadata(next);
     case 'feature.created':
     case 'feature.updated':
     case 'attachment.created':
     case 'attachment.deleted':
-      upsertFeature(op.entity);
-      return next;
+      return upsertFeature(op.entity) ? withMapMetadata(next) : mapData;
     case 'feature.deleted':
       next.layers = next.layers.map((layer) => ({
         ...layer,
         features: layer.features.filter((feature) => feature.id !== op.entityId),
       }));
-      return next;
+      return withMapMetadata(next);
     default:
-      return next;
+      return mapData;
   }
 }

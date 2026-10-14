@@ -1,0 +1,173 @@
+/* Search helps collect places into the active My Maps layer. */
+.my-maps-search-panel.compact {
+  flex: 0 1 auto;
+  height: auto;
+  max-height: min(480px, calc(100svh - 126px));
+  overflow: hidden;
+}
+.my-maps-search-panel .place-panel-header {
+  min-height: 48px;
+  gap: 9px;
+  padding: 9px 12px;
+}
+.my-maps-search-panel .place-panel-header h2 { font-size: 14px; }
+.my-maps-search-panel .place-panel-header > div > span { margin-top: 2px; }
+.search-return-layers {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #1a73e8;
+  font-size: 11px;
+}
+.search-return-layers:hover { background: #e8f0fe; }
+.search-results-layer-target {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 10px 13px;
+  border-bottom: 1px solid #edf0f4;
+  color: #70757a;
+  font-size: 11px;
+}
+.search-results-layer-target b { min-width: 0; overflow: hidden; color: #3c4043; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.my-maps-search-panel .place-result-list { flex: 1 1 auto; overflow-y: auto; }
+.my-maps-search-panel .search-result-row { display: block; padding: 0 0 10px; border-bottom: 1px solid #edf0f4; }
+.search-result-row:last-child { border-bottom: 0; }
+.my-maps-search-panel .search-result-row > .place-result-card:first-child { display: flex; width: 100%; padding: 12px 13px 9px; border: 0; }
+.my-maps-search-panel .place-result-number { display: grid; flex: 0 0 23px; }
+.my-maps-search-panel .place-result-summary h3 { font-size: 13px; }
+.my-maps-search-panel .place-result-thumbnail { width: 52px; height: 48px; }
+.search-result-actions { display: flex; gap: 8px; padding: 0 13px 0 43px; }
+.search-result-actions button,
+.search-place-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.search-result-add { color: #1a73e8; background: #e8f0fe; }
+.search-result-add:hover { background: #d2e3fc; }
+.search-result-route { background: transparent; color: #5f6368; }
+.search-result-route:hover { background: #f1f3f4; }
+.search-result-actions button:disabled,
+.search-place-actions button:disabled { cursor: default; opacity: .45; }
+.search-panel-selected-place { min-height: 0; overflow-y: auto; }
+.search-panel-selected-place .search-place-card { width: auto; max-height: none; }
+.search-panel-selected-place .search-place-header .search-place-back,
+.search-panel-selected-place .search-place-close { display: none; }
+.search-place-card {
+  width: 336px;
+  max-width: calc(100vw - 28px);
+  max-height: min(450px, calc(100svh - 155px));
+  overflow-y: auto;
+  padding: 0;
+  border-radius: 4px;
+  background: #fff;
+  color: #202124;
+  font-size: 12px;
+}
+.search-place-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px 12px 8px 15px;
+}
+.search-place-header > div { flex: 1; min-width: 0; }
+.search-place-header h2 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.search-place-header p { margin: 4px 0 0; font-size: 11px; color: #70757a; }
+.search-place-back,
+.search-place-close {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #70757a;
+}
+.search-place-back { margin-left: -5px; }
+.search-place-back:hover,
+.search-place-close:hover { background: #f1f3f4; }
+.search-place-address { display: flex; align-items: flex-start; gap: 7px; margin: 2px 15px 8px; color: #3c4043; font-size: 12px; line-height: 1.5; }
+.search-place-address svg { flex: 0 0 auto; margin-top: 2px; color: #70757a; }
+.search-place-address span { min-width: 0; overflow-wrap: anywhere; }
+.search-place-target { display: flex; gap: 4px; margin: 10px 15px 7px; font-size: 11px; color: #70757a; }
+.search-place-target b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: #3c4043; }
+.search-place-actions { display: flex; align-items: center; gap: 7px; padding: 0 15px 12px; }
+.search-place-actions .search-place-add { min-height: 33px; padding: 6px 12px; background: #1a73e8; color: #fff; }
+.search-place-actions .search-place-add:hover { background: #1765cc; }
+.search-place-actions .search-place-directions { background: transparent; color: #5f6368; }
+.search-place-actions .search-place-directions:hover { background: #f1f3f4; }
+.search-place-more { border-top: 1px solid #edf0f4; }
+.search-place-more > summary { padding: 10px 15px; color: #70757a; font-size: 11px; cursor: pointer; }
+.search-place-information { padding: 0 15px 12px; }
+.search-place-photos { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 8px; }
+.search-place-photos a { display: block; flex: 0 0 108px; height: 76px; }
+.search-place-photos img { width: 100%; height: 100%; border-radius: 3px; object-fit: cover; }
+.search-place-info-row { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.search-place-info-row svg { flex: 0 0 auto; margin-top: 2px; color: #70757a; }
+.search-place-info-row a { color: #1a73e8; }
+.search-place-coordinates { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px; margin: 10px 0 0; }
+.search-place-coordinates > div { display: flex; flex-direction: column; gap: 2px; }
+.search-place-coordinates span { font-size: 11px; }
+.search-place-coordinates small { color: #9aa0a6; font-size: 9px; }
+.search-place-coordinates button { display: inline-flex; align-items: center; gap: 4px; padding: 5px; border: 0; border-radius: 3px; background: transparent; color: #5f6368; }
+.search-place-coordinates button:hover { background: #f1f3f4; }
+.search-place-coordinates p { width: 100%; margin: 0; color: #d93025; font-size: 10px; }
+.search-place-source { margin: 12px 0 0; color: #9aa0a6; font-size: 9px; }
+.search-place-loading { display: flex; gap: 6px; align-items: center; margin: 6px 15px; color: #70757a; font-size: 11px; }
+.search-place-error { margin: 6px 15px; color: #d93025; font-size: 11px; line-height: 1.5; }
+@media (max-width: 760px) {
+  .my-maps-search-panel.compact { max-height: none; height: 100%; }
+  .search-place-card { max-height: min(450px, calc(100svh - 170px)); }
+  .search-result-actions button { min-height: 34px; }
+}
+/* The temporary search popover also works outside the persistent layer panel. */
+.my-maps-search-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  background: #fff;
+  color: #202124;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.my-maps-search-panel .place-panel-header { display: flex; align-items: center; flex: 0 0 auto; border-bottom: 1px solid #edf0f4; }
+.my-maps-search-panel .place-panel-header > div { flex: 1; min-width: 0; }
+.my-maps-search-panel .place-panel-header h2 { margin: 0; font-weight: 500; }
+.my-maps-search-panel .place-panel-header > div > span { display: block; color: #80868b; font-size: 11px; }
+.my-maps-search-panel .place-panel-header .icon-button { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #70757a; }
+.my-maps-search-panel .place-panel-header .icon-button:hover { background: #f1f3f4; }
+.my-maps-search-panel .place-result-list { min-height: 0; overscroll-behavior: contain; }
+.my-maps-search-panel .place-result-card { min-height: 80px; gap: 9px; background: #fff; text-align: left; color: #202124; }
+.my-maps-search-panel .place-result-card:hover { background: #f4f8ff; }
+.my-maps-search-panel .place-result-number { place-items: center; height: 23px; margin-top: 1px; border-radius: 50%; color: #1967d2; background: #e8f0fe; font-size: 11px; font-weight: 600; }
+.my-maps-search-panel .place-result-summary { flex: 1; min-width: 0; }
+.my-maps-search-panel .place-result-summary h3 { margin: 0 0 4px; font-weight: 500; line-height: 1.45; }
+.my-maps-search-panel .place-result-address,
+.my-maps-search-panel .place-result-meta { margin: 3px 0 0; color: #80868b; font-size: 11px; line-height: 1.5; }
+.my-maps-search-panel .place-result-meta { color: #5f6368; }
+.my-maps-search-panel .place-result-thumbnail { flex: 0 0 auto; border-radius: 4px; object-fit: cover; }
+.my-maps-search-panel .place-search-pagination { display: flex; flex: 0 0 auto; justify-content: center; align-items: center; gap: 15px; padding: 10px; border-top: 1px solid #edf0f4; color: #80868b; font-size: 11px; }
+.my-maps-search-panel .place-search-pagination button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: #f8fafd; color: #5f6368; }
+.my-maps-search-panel .place-search-loading { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 18px 13px; color: #70757a; font-size: 12px; }
+.my-maps-search-panel .place-search-error { margin: 0; padding: 12px 13px; color: #d93025; background: #fce8e6; font-size: 12px; line-height: 1.5; }
+.my-maps-search-panel .place-search-empty { padding: 24px 16px; text-align: center; color: #70757a; font-size: 12px; }
+.my-maps-search-panel .place-search-empty p { margin: 10px 0 7px; color: #3c4043; }
+.my-maps-search-panel .place-search-empty > span { font-size: 11px; line-height: 1.5; }
+.my-maps-search-panel .search-area-button { display: flex; align-items: center; justify-content: center; gap: 7px; align-self: center; margin: 9px; padding: 7px 13px; border: 1px solid #d2e3fc; border-radius: 18px; background: #fff; color: #1967d2; font-size: 12px; }

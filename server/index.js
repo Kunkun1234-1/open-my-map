@@ -11,7 +11,10 @@ import {
   db, getMap, getPublicMap, listMaps, listProjects, adminStats, backupData, audit, now,
   listVisibleMaps, listVisibleProjects, createProjectOwnedBy, inviteProjectMember,
   listProjectMembers, updateProjectMemberRole, removeProjectMember, transferProjectOwnership,
-  hashPassword, normalizeGlobalRole,
+  hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, setMapFavorite,
+  reorderMapLayers, reorderLayerFeatures, moveMapFeature, updateMapLayerStyle,
+  createContentCheckpoint, restoreContentCheckpoint,
+  saveMapDirections, validateDirectionsPayload,
 } from './db.js';
 import {
   loadSession, loginWithEmail, logoutSession, registerUser, updateProfile, changePassword,
@@ -44,6 +47,20 @@ app.use(cors());
 app.use(express.json({ limit: '12mb' }));
 // 所有请求注入当前会话/用户。
 app.use(loadSession);
+app.use('/uploads', (req, res, next) => {
+  let storedName;
+  // 与静态文件服务一致地处理编码字符和重复斜杠，避免路径别名绕过回收站校验。
+  try { storedName = path.posix.normalize(decodeURIComponent(req.path)).slice(1); } catch { return res.status(400).json({ error: '无效媒体路径' }); }
+  const deletedAttachment = db.prepare(`
+    SELECT 1 FROM attachments a
+    JOIN features f ON f.id = a.feature_id
+    JOIN layers l ON l.id = f.layer_id
+    JOIN maps m ON m.id = l.map_id
+    WHERE a.stored_name = ? AND m.deleted_at IS NOT NULL
+  `).get(storedName);
+  if (deletedAttachment) return res.status(404).json({ error: '媒体文件不存在' });
+  next();
+});
 app.use('/uploads', express.static(uploadsDir, {
   dotfiles: 'deny',
   index: false,
@@ -99,6 +116,39 @@ function assertVersionMatch(req, res, currentVersion, latestPayload) {
   return false;
 }
 
+function assertFingerprintMatch(req, res, map) {
+  const expected = req.body?.expectedFingerprint;
+  if (expected === undefined) return true;
+  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected)) {
+    res.status(400).json({ error: '无效地图内容指纹' });
+    return false;
+  }
+  if (expected === map.contentFingerprint) return true;
+  res.status(409).json({ error: '地图已被更新，请基于最新内容继续编辑', conflict: true, latest: map, currentFingerprint: map.contentFingerprint });
+  return false;
+}
+
+// Fingerprint guarding is opt-in for ordinary editing and mandatory for history
+// restore. It also prevents other collaborators' edits entering a local history
+// entry between capturing its checkpoint and executing its mutation.
+app.use((req, res, next) => {
+  if (!['POST', 'PATCH', 'DELETE'].includes(req.method) || req.body?.expectedFingerprint === undefined) return next();
+  let mapId;
+  let decodedPath;
+  try { decodedPath = decodeURIComponent(req.path); } catch { return next(); }
+  const mapMatch = /^\/api\/maps\/([^/]+)(?:\/(?:layers|reorder|directions|features\/reorder))?\/?$/.exec(decodedPath);
+  const layerMatch = /^\/api\/layers\/([^/]+)(?:\/(?:style|features(?:\/bulk)?))?\/?$/.exec(decodedPath);
+  const featureMatch = /^\/api\/features\/([^/]+)(?:\/move)?\/?$/.exec(decodedPath);
+  if (mapMatch) mapId = id(mapMatch[1]);
+  else if (layerMatch) mapId = db.prepare('SELECT map_id FROM layers WHERE id = ?').get(id(layerMatch[1]))?.map_id;
+  else if (featureMatch) mapId = db.prepare('SELECT l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?').get(id(featureMatch[1]))?.map_id;
+  if (mapId) {
+    if (!assertEditor(req, res, mapId)) return;
+    if (!assertFingerprintMatch(req, res, getMap(mapId))) return;
+  }
+  next();
+});
+
 function findFeatureInMap(map, featureId) {
   for (const layer of map?.layers || []) {
     const feature = (layer.features || []).find((item) => item.id === featureId);
@@ -112,7 +162,11 @@ function findLayerInMap(map, layerId) {
 }
 
 function emitMapOp(mapId, action, actor, { entity = null, entityId = null, version = null } = {}) {
-  broadcastMapOp(mapId, createMapOp({ action, actor, entity, entityId, version }));
+  const map = getMap(mapId);
+  broadcastMapOp(mapId, {
+    ...createMapOp({ action, actor, entity, entityId, version }),
+    ...(map ? { mapVersion: map.version, contentFingerprint: map.contentFingerprint } : {}),
+  });
 }
 
 function safeUnlink(filePath) {
@@ -202,6 +256,8 @@ app.delete('/api/auth/sessions', requireUser, (req, res) => {
 });
 
 app.get('/api/maps', requireUser, (req, res) => res.json(listVisibleMaps(req.user)));
+// 静态回收站路径必须先于 /api/maps/:mapId。
+app.get('/api/maps/trash', requireUser, (req, res) => res.json(listVisibleTrashMaps(req.user)));
 app.get('/api/projects', requireUser, (req, res) => res.json(listVisibleProjects(req.user)));
 
 app.post('/api/projects', requireUser, (req, res) => {
@@ -276,8 +332,13 @@ app.post('/api/maps', requireUser, (req, res) => {
   let projectId;
   const requestedProjectId = id(req.body.projectId ?? req.body.project_id);
   if (requestedProjectId) {
+    const project = db.prepare('SELECT status FROM projects WHERE id = ?').get(requestedProjectId);
+    if (!project) return notFound(res, '项目不存在');
+    if (project.status !== 'active') return res.status(400).json({ error: '已归档项目不能创建地图' });
     const membership = db.prepare('SELECT role FROM project_members WHERE project_id = ? AND user_id = ?').get(requestedProjectId, req.user.id);
-    if (!membership && req.user.role !== 'admin') return res.status(403).json({ error: '无权在该项目创建地图' });
+    if (req.user.role !== 'admin' && membership?.role !== 'owner' && membership?.role !== 'editor') {
+      return res.status(403).json({ error: '无权在该项目创建地图' });
+    }
     projectId = requestedProjectId;
   } else {
     const candidates = listVisibleProjects(req.user);
@@ -287,7 +348,7 @@ app.post('/api/maps', requireUser, (req, res) => {
         const row = db.prepare('SELECT role FROM project_members WHERE project_id = ? AND user_id = ?').get(p.id, req.user.id);
         return row?.role === 'owner' || row?.role === 'editor';
       });
-    projectId = editable[0]?.id || candidates[0]?.id || null;
+    projectId = editable[0]?.id || null;
   }
   if (!projectId) return res.status(400).json({ error: '当前账号没有可创建地图的项目，请联系项目负责人或数据管理员' });
   const result = db.prepare(`
@@ -324,6 +385,10 @@ app.get('/api/maps/:mapId', (req, res) => {
 // 通过返回 true；失败时已写入 401/403 响应并返回 false。
 function assertEditor(req, res, mapId) {
   if (!req.user) { res.status(401).json({ error: '请先登录' }); return false; }
+  if (!db.prepare('SELECT 1 FROM maps WHERE id = ? AND deleted_at IS NULL').get(mapId)) {
+    notFound(res, '地图不存在');
+    return false;
+  }
   if (req.user.role === 'admin') return true;
   const membership = db.prepare(`
     SELECT role FROM project_members pm
@@ -334,6 +399,40 @@ function assertEditor(req, res, mapId) {
   res.status(403).json({ error: '无权修改该地图' });
   return false;
 }
+
+app.patch('/api/maps/:mapId/favorite', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!getMap(mapId)) return notFound(res, '地图不存在');
+  if (typeof req.body?.favorite !== 'boolean') return res.status(400).json({ error: 'favorite 必须为布尔值' });
+  res.json(setMapFavorite(req.user, mapId, req.body.favorite));
+});
+
+app.post('/api/maps/:mapId/trash', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  const existing = db.prepare('SELECT name, deleted_at FROM maps WHERE id = ?').get(mapId);
+  if (!existing) return notFound(res, '地图不存在');
+  if (!canManageMap(req.user, mapId)) return res.status(403).json({ error: '仅项目所有者或管理员可将地图移至回收站' });
+  if (!existing.deleted_at) {
+    const deletedAt = now();
+    db.prepare('UPDATE maps SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE id = ?').run(deletedAt, deletedAt, mapId);
+    audit('trash', 'map', mapId, `地图“${existing.name}”移至回收站`);
+    // 与现有编辑器的删除事件兼容，同时移出实时协作房间。
+    emitMapOp(mapId, 'map.deleted', req.user, { entityId: mapId });
+  }
+  res.json(listVisibleTrashMaps(req.user).find((map) => map.id === mapId));
+});
+
+app.post('/api/maps/:mapId/restore', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  const existing = db.prepare('SELECT name, deleted_at FROM maps WHERE id = ?').get(mapId);
+  if (!existing) return notFound(res, '地图不存在');
+  if (!canManageMap(req.user, mapId)) return res.status(403).json({ error: '仅项目所有者或管理员可恢复地图' });
+  if (existing.deleted_at) {
+    db.prepare('UPDATE maps SET deleted_at = NULL, updated_at = ?, version = version + 1 WHERE id = ?').run(now(), mapId);
+    audit('restore', 'map', mapId, `恢复地图“${existing.name}”`);
+  }
+  res.json(getMap(mapId));
+});
 
 app.patch('/api/maps/:mapId', (req, res) => {
   const mapId = id(req.params.mapId);
@@ -363,9 +462,12 @@ app.patch('/api/maps/:mapId', (req, res) => {
 
 app.delete('/api/maps/:mapId', (req, res) => {
   const mapId = id(req.params.mapId);
-  const existing = db.prepare('SELECT name FROM maps WHERE id = ?').get(mapId);
+  const existing = db.prepare('SELECT name, deleted_at FROM maps WHERE id = ?').get(mapId);
   if (!existing) return notFound(res, '地图不存在');
-  if (!assertEditor(req, res, mapId)) return;
+  if (existing.deleted_at) {
+    if (!req.user) return res.status(401).json({ error: '请先登录' });
+    if (!canManageMap(req.user, mapId)) return res.status(403).json({ error: '仅项目所有者或管理员可永久删除地图' });
+  } else if (!assertEditor(req, res, mapId)) return;
   const attachments = db.prepare(`
     SELECT a.stored_name FROM attachments a
     JOIN features f ON f.id = a.feature_id
@@ -379,10 +481,58 @@ app.delete('/api/maps/:mapId', (req, res) => {
   res.status(204).end();
 });
 
+app.post('/api/maps/:mapId/checkpoints', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  if (!assertFingerprintMatch(req, res, getMap(mapId))) return;
+  res.status(201).json(createContentCheckpoint(mapId, req.user.id));
+});
+
+app.post('/api/maps/:mapId/restore-checkpoint', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const result = restoreContentCheckpoint(mapId, req.user.id, req.body?.token, req.body?.expectedFingerprint);
+  audit('restore-history', 'map', mapId, '原子恢复当前用户的地图内容历史');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: result.map, version: result.map.version });
+  res.json(result);
+});
+
+app.post('/api/maps/:mapId/reorder', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const latest = getMap(mapId);
+  if (!assertVersionMatch(req, res, latest.version, latest)) return;
+  const map = reorderMapLayers(mapId, req.body?.layerIds);
+  audit('reorder', 'map', mapId, '调整图层顺序');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.json(map);
+});
+
+app.post('/api/maps/:mapId/features/reorder', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const latest = getMap(mapId);
+  if (!assertVersionMatch(req, res, latest.version, latest)) return;
+  const map = reorderLayerFeatures(mapId, req.body?.layerId, req.body?.featureIds);
+  audit('reorder', 'layer', req.body.layerId, '调整要素顺序');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.json(map);
+});
+
+app.post('/api/maps/:mapId/directions', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const map = saveMapDirections(mapId, req.body || {});
+  audit(map.createdFeatureId ? 'create-directions' : 'update-directions', 'layer', map.savedLayerId, '原子保存独立路线图层');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.status(map.createdFeatureId ? 201 : 200).json(map);
+});
+
 app.post('/api/maps/:mapId/layers', (req, res) => {
   const mapId = id(req.params.mapId);
   if (!db.prepare('SELECT 1 FROM maps WHERE id = ?').get(mapId)) return notFound(res, '地图不存在');
   if (!assertEditor(req, res, mapId)) return;
+  if (req.body.kind !== undefined && req.body.kind !== 'features') return res.status(400).json({ error: '请通过路线保存接口创建路线图层' });
   const created = now();
   const position = Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM layers WHERE map_id = ?').get(mapId).position);
   const name = String(req.body.name || '无标题图层').trim().slice(0, 120) || '无标题图层';
@@ -395,7 +545,7 @@ app.post('/api/maps/:mapId/layers', (req, res) => {
   const map = getMap(mapId);
   const layer = findLayerInMap(map, Number(result.lastInsertRowid));
   emitMapOp(mapId, 'layer.created', req.user, { entity: layer, version: layer?.version });
-  res.status(201).json(map);
+  res.status(201).json({ ...map, createdLayerId: Number(result.lastInsertRowid) });
 });
 
 app.patch('/api/layers/:layerId', (req, res) => {
@@ -403,6 +553,7 @@ app.patch('/api/layers/:layerId', (req, res) => {
   const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
   if (!layer) return notFound(res, '图层不存在');
   if (!assertEditor(req, res, layer.map_id)) return;
+  if (req.body.kind !== undefined && req.body.kind !== layer.kind) return res.status(400).json({ error: '不能更改图层类型' });
   const latestMap = getMap(layer.map_id);
   if (!assertVersionMatch(req, res, layer.version, findLayerInMap(latestMap, layerId))) return;
   const fields = [];
@@ -422,12 +573,25 @@ app.patch('/api/layers/:layerId', (req, res) => {
     fields.push('version = version + 1', 'updated_at = ?');
     values.push(now(), layerId);
     db.prepare(`UPDATE layers SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
     audit('update', 'layer', layerId, `更新图层字段 ${fields.slice(0, -2).join(', ')}`);
   }
   const map = getMap(layer.map_id);
   const updated = findLayerInMap(map, layerId);
   emitMapOp(layer.map_id, 'layer.updated', req.user, { entity: updated, version: updated?.version });
+  res.json(map);
+});
+
+app.patch('/api/layers/:layerId/style', (req, res) => {
+  const layerId = id(req.params.layerId);
+  const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
+  if (!layer) return notFound(res, '图层不存在');
+  if (!assertEditor(req, res, layer.map_id)) return;
+  const latest = getMap(layer.map_id);
+  if (!assertVersionMatch(req, res, layer.version, findLayerInMap(latest, layerId))) return;
+  const map = updateMapLayerStyle(layer.map_id, layerId, req.body?.style, req.body?.applyToFeatures ?? false);
+  audit('style', 'layer', layerId, '统一图层样式');
+  emitMapOp(layer.map_id, 'map.updated', req.user, { entity: map, version: map.version });
   res.json(map);
 });
 
@@ -445,9 +609,10 @@ app.delete('/api/layers/:layerId', (req, res) => {
   `).all(layerId);
   db.prepare('DELETE FROM layers WHERE id = ?').run(layerId);
   deleteStoredFiles(attachments);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
   audit('delete', 'layer', layerId, `从地图 ${layer.map_id} 删除`);
   emitMapOp(layer.map_id, 'layer.deleted', req.user, { entityId: layerId });
+  if (req.body?.expectedFingerprint !== undefined) return res.json(getMap(layer.map_id));
   res.status(204).end();
 });
 
@@ -456,10 +621,11 @@ function createFeature(layerId, payload) {
   const geometry = payload.geometry || {};
   const type = geometry.type || payload.type;
   if (!['Point', 'LineString', 'Polygon'].includes(type)) throw new Error('不支持的几何类型');
+  const position = Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM features WHERE layer_id = ?').get(layerId).position);
   const result = db.prepare(`
-    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, created_at, updated_at, version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-  `).run(layerId, type, String(payload.name || '无标题要素').slice(0, 180), String(payload.description || ''), JSON.stringify(geometry), JSON.stringify(payload.style || {}), created, created);
+    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at, version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(layerId, type, String(payload.name || '无标题要素').slice(0, 180), String(payload.description || ''), JSON.stringify(geometry), JSON.stringify(payload.style || {}), position, created, created);
   return Number(result.lastInsertRowid);
 }
 
@@ -468,13 +634,14 @@ app.post('/api/layers/:layerId/features', (req, res) => {
   const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
   if (!layer) return notFound(res, '图层不存在');
   if (!assertEditor(req, res, layer.map_id)) return;
+  if (layer.kind === 'directions') return res.status(400).json({ error: '路线图层只接受路线规划结果，不能添加普通要素' });
   const featureId = createFeature(layerId, req.body);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
   audit('create', 'feature', featureId, `添加到图层 ${layerId}`);
   const map = getMap(layer.map_id);
   const feature = findFeatureInMap(map, featureId);
   emitMapOp(layer.map_id, 'feature.created', req.user, { entity: feature, version: feature?.version });
-  res.status(201).json(map);
+  res.status(201).json({ ...map, createdFeatureId: featureId });
 });
 
 app.post('/api/layers/:layerId/features/bulk', (req, res) => {
@@ -482,6 +649,7 @@ app.post('/api/layers/:layerId/features/bulk', (req, res) => {
   const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
   if (!layer) return notFound(res, '图层不存在');
   if (!assertEditor(req, res, layer.map_id)) return;
+  if (layer.kind === 'directions') return res.status(400).json({ error: '路线图层不支持导入普通要素' });
   const features = Array.isArray(req.body.features) ? req.body.features.slice(0, 2000) : [];
   db.exec('BEGIN');
   try {
@@ -490,7 +658,7 @@ app.post('/api/layers/:layerId/features/bulk', (req, res) => {
       INSERT INTO import_jobs (map_id, layer_id, file_name, format, row_count, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'completed', ?)
     `).run(layer.map_id, layerId, String(req.body.fileName || 'import'), String(req.body.format || 'GeoJSON').toUpperCase(), features.length, now());
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), layer.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
@@ -505,12 +673,15 @@ app.post('/api/layers/:layerId/features/bulk', (req, res) => {
 app.patch('/api/features/:featureId', (req, res) => {
   const featureId = id(req.params.featureId);
   const feature = db.prepare(`
-    SELECT f.*, l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
+    SELECT f.*, l.map_id, l.kind AS layer_kind FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
   `).get(featureId);
   if (!feature) return notFound(res, '要素不存在');
   if (!assertEditor(req, res, feature.map_id)) return;
   const latestMap = getMap(feature.map_id);
   if (!assertVersionMatch(req, res, feature.version, findFeatureInMap(latestMap, featureId))) return;
+  if (feature.layer_kind === 'directions') {
+    validateDirectionsPayload(req.body.geometry ?? JSON.parse(feature.geometry_json), req.body.style ?? JSON.parse(feature.style_json));
+  }
   const fields = [];
   const values = [];
   for (const key of ['name', 'description']) {
@@ -528,19 +699,42 @@ app.patch('/api/features/:featureId', (req, res) => {
     values.push(JSON.stringify(req.body.style || {}));
   }
   if (Object.hasOwn(req.body, 'layerId')) {
+    const targetLayerId = id(req.body.layerId);
+    const target = db.prepare('SELECT id, kind FROM layers WHERE id = ? AND map_id = ?').get(targetLayerId, feature.map_id);
+    if (!target) return res.status(400).json({ error: '目标图层必须属于当前地图' });
+    if (targetLayerId !== feature.layer_id && (target.kind === 'directions' || feature.layer_kind === 'directions')) {
+      return res.status(400).json({ error: '路线图层不能搬入或搬出普通要素，请通过路线规划编辑' });
+    }
     fields.push('layer_id = ?');
-    values.push(id(req.body.layerId));
+    values.push(targetLayerId);
+    if (targetLayerId !== feature.layer_id) {
+      fields.push('position = ?');
+      values.push(Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM features WHERE layer_id = ?').get(targetLayerId).position));
+    }
   }
   if (fields.length) {
     fields.push('version = version + 1', 'updated_at = ?');
     values.push(now(), featureId);
     db.prepare(`UPDATE features SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), feature.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
     audit('update', 'feature', featureId, `更新字段 ${fields.slice(0, -2).join(', ')}`);
   }
   const map = getMap(feature.map_id);
   const updated = findFeatureInMap(map, featureId);
   emitMapOp(feature.map_id, 'feature.updated', req.user, { entity: updated, version: updated?.version });
+  res.json(map);
+});
+
+app.post('/api/features/:featureId/move', (req, res) => {
+  const featureId = id(req.params.featureId);
+  const feature = db.prepare('SELECT f.*, l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?').get(featureId);
+  if (!feature) return notFound(res, '要素不存在');
+  if (!assertEditor(req, res, feature.map_id)) return;
+  const latest = getMap(feature.map_id);
+  if (!assertVersionMatch(req, res, feature.version, findFeatureInMap(latest, featureId))) return;
+  const map = moveMapFeature(feature.map_id, featureId, req.body?.layerId, req.body?.index);
+  audit('move', 'feature', featureId, `移动到图层 ${req.body.layerId}`);
+  emitMapOp(feature.map_id, 'map.updated', req.user, { entity: map, version: map.version });
   res.json(map);
 });
 
@@ -594,6 +788,8 @@ app.post('/api/features/:featureId/attachments', mediaUpload.array('files', MAX_
       });
     }
 
+    // 文件检测会 await；检测期间地图可能已被移至回收站。
+    if (!getMap(feature.map_id)) throw httpError('地图不存在', 404);
     db.exec('BEGIN');
     transactionStarted = true;
     const insert = db.prepare(`
@@ -605,7 +801,7 @@ app.post('/api/features/:featureId/attachments', mediaUpload.array('files', MAX_
       item.moved = true;
       insert.run(featureId, item.kind, item.originalName, item.storedName, item.mimeType, item.file.size, now());
     }
-    db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), feature.map_id);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
     db.prepare('UPDATE features SET version = version + 1, updated_at = ? WHERE id = ?').run(now(), featureId);
     audit('upload', 'feature', featureId, `上传 ${prepared.length} 个图片/视频附件`);
     db.exec('COMMIT');
@@ -636,7 +832,7 @@ app.delete('/api/attachments/:attachmentId', (req, res) => {
   if (!attachment) return notFound(res, '附件不存在');
   if (!assertEditor(req, res, attachment.map_id)) return;
   db.prepare('DELETE FROM attachments WHERE id = ?').run(attachmentId);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), attachment.map_id);
+  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), attachment.map_id);
   db.prepare('UPDATE features SET version = version + 1, updated_at = ? WHERE id = ?').run(now(), attachment.feature_id);
   audit('delete', 'attachment', attachmentId, `从“${attachment.feature_name}”删除附件`);
   deleteStoredFiles([attachment]);
@@ -653,16 +849,34 @@ app.delete('/api/attachments/:attachmentId', (req, res) => {
 app.delete('/api/features/:featureId', (req, res) => {
   const featureId = id(req.params.featureId);
   const feature = db.prepare(`
-    SELECT f.*, l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
+    SELECT f.*, l.map_id, l.kind AS layer_kind FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
   `).get(featureId);
   if (!feature) return notFound(res, '要素不存在');
   if (!assertEditor(req, res, feature.map_id)) return;
   const attachments = db.prepare('SELECT stored_name FROM attachments WHERE feature_id = ?').all(featureId);
-  db.prepare('DELETE FROM features WHERE id = ?').run(featureId);
+  if (feature.layer_kind === 'directions') {
+    const layerCount = Number(db.prepare('SELECT COUNT(*) AS count FROM layers WHERE map_id = ?').get(feature.map_id).count);
+    if (layerCount <= 1) return res.status(409).json({ error: '每张地图至少保留一个图层' });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare('DELETE FROM layers WHERE id = ?').run(feature.layer_id);
+      db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } else {
+    db.prepare('DELETE FROM features WHERE id = ?').run(featureId);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
+  }
   deleteStoredFiles(attachments);
-  db.prepare('UPDATE maps SET updated_at = ? WHERE id = ?').run(now(), feature.map_id);
   audit('delete', 'feature', featureId, `删除“${feature.name}”`);
-  emitMapOp(feature.map_id, 'feature.deleted', req.user, { entityId: featureId });
+  if (feature.layer_kind === 'directions') {
+    const map = getMap(feature.map_id);
+    emitMapOp(feature.map_id, 'map.updated', req.user, { entity: map, version: map.version });
+  } else emitMapOp(feature.map_id, 'feature.deleted', req.user, { entityId: featureId });
+  if (req.body?.expectedFingerprint !== undefined) return res.json(getMap(feature.map_id));
   res.status(204).end();
 });
 
@@ -705,6 +919,7 @@ app.get('/api/admin/layers', (req, res) => res.json(db.prepare(`
   FROM layers l
   JOIN maps m ON m.id = l.map_id
   LEFT JOIN projects p ON p.id = m.project_id
+  WHERE m.deleted_at IS NULL
   ORDER BY l.updated_at DESC
 `).all()));
 app.get('/api/admin/features', (req, res) => res.json(db.prepare(`
@@ -715,6 +930,7 @@ app.get('/api/admin/features', (req, res) => res.json(db.prepare(`
   JOIN layers l ON l.id = f.layer_id
   JOIN maps m ON m.id = l.map_id
   LEFT JOIN projects p ON p.id = m.project_id
+  WHERE m.deleted_at IS NULL
   ORDER BY f.updated_at DESC
 `).all()));
 app.get('/api/admin/attachments', (req, res) => res.json(db.prepare(`
@@ -724,17 +940,19 @@ app.get('/api/admin/attachments', (req, res) => res.json(db.prepare(`
   JOIN features f ON f.id = a.feature_id
   JOIN layers l ON l.id = f.layer_id
   JOIN maps m ON m.id = l.map_id
+  WHERE m.deleted_at IS NULL
   ORDER BY a.created_at DESC
 `).all()));
 app.get('/api/admin/imports', (req, res) => res.json(db.prepare(`
   SELECT i.*, m.name AS map_name, l.name AS layer_name FROM import_jobs i
-  JOIN maps m ON m.id = i.map_id LEFT JOIN layers l ON l.id = i.layer_id ORDER BY i.created_at DESC
+  JOIN maps m ON m.id = i.map_id LEFT JOIN layers l ON l.id = i.layer_id
+  WHERE m.deleted_at IS NULL ORDER BY i.created_at DESC
 `).all()));
 app.get('/api/admin/audit', (req, res) => res.json(db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 250').all()));
 app.get('/api/admin/users', (req, res) => res.json(db.prepare(`
   SELECT u.*,
     (SELECT COUNT(*) FROM project_members pm WHERE pm.user_id = u.id) AS project_count,
-    (SELECT COUNT(*) FROM maps m JOIN projects p ON p.id = m.project_id WHERE p.owner_user_id = u.id) AS map_count
+    (SELECT COUNT(*) FROM maps m JOIN projects p ON p.id = m.project_id WHERE p.owner_user_id = u.id AND m.deleted_at IS NULL) AS map_count
   FROM users u ORDER BY u.created_at DESC
 `).all()));
 
@@ -842,7 +1060,13 @@ app.use((error, req, res, next) => {
     : isFileCountLimit
       ? `每次最多上传 ${MAX_FILES_PER_UPLOAD} 个文件`
       : error.message || '请求处理失败';
-  res.status(status).json({ error: message });
+  res.status(status).json({
+    error: message,
+    ...(error.code ? { code: error.code } : {}),
+    ...(error.conflict ? { conflict: true } : {}),
+    ...(error.latest ? { latest: error.latest } : {}),
+    ...(error.currentFingerprint ? { currentFingerprint: error.currentFingerprint } : {}),
+  });
 });
 
 const server = http.createServer(app);
