@@ -16,12 +16,14 @@ import FeatureMediaGallery, {
   formatFileSize, MAX_ATTACHMENTS_PER_FEATURE, MAX_FILES_PER_UPLOAD, MEDIA_ACCEPT, validateMediaSelection,
 } from './FeatureMediaGallery.jsx';
 import {
-  AMAP_PROVIDER, BASE_MAPS, baseMapPreviewStyle, exportCsv, exportGeoJson, exportKml,
+  AMAP_PROVIDER, exportCsv, exportGeoJson, exportKml,
   formatDate, normalizeBaseMapKey, parseImportFile,
 } from '../utils.js';
 import './editor.css';
 import DirectionsPanel from './editor/DirectionsPanel.jsx';
 import SearchResultsPanel from './editor/SearchResultsPanel.jsx';
+import SearchPlaceCard from './editor/SearchPlaceCard.jsx';
+import BaseMapPicker from './editor/BaseMapPicker.jsx';
 import LayerPanel from './editor/LayerPanel.jsx';
 import LayerStyleDialog from './editor/LayerStyleDialog.jsx';
 import MobileSheet from './editor/MobileSheet.jsx';
@@ -32,6 +34,7 @@ import usePlaceSearch from './editor/usePlaceSearch.js';
 import useEditorHistory from './editor/useEditorHistory.js';
 import { measurementDistance, measurementArea } from './editor/measurement.js';
 import './editor/editor-enhancements.css';
+import './editor/my-maps-editor.css';
 
 const COLORS = ['#1a73e8', '#00897b', '#8e24aa', '#e85d4a', '#f9ab00', '#d93025', '#5f6368', '#039be5'];
 
@@ -491,7 +494,6 @@ export default function MapEditor({ mapId }) {
   const [layerMenu, setLayerMenu] = useState(null);
   const [styleTarget, setStyleTarget] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [panelTab, setPanelTab] = useState('layers');
   const [trafficVisible, setTrafficVisible] = useState(false);
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
   const [toast, setToast] = useState('');
@@ -508,6 +510,7 @@ export default function MapEditor({ mapId }) {
   const [shortcutDialog, setShortcutDialog] = useState(false);
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width:760px)').matches);
   const searchInputRef = useRef(null);
+  const routeEditorRef = useRef(null);
   const draftRedoRef = useRef([]);
   const measurementJournalRef = useRef({ past: [], future: [] });
   const measurementStateRef = useRef({ points: [], closed: false });
@@ -537,10 +540,29 @@ export default function MapEditor({ mapId }) {
   });
   const directions = useDirections({
     lang,
-    onSave: async (payload) => {
-      if (!selectedLayer) throw new Error(text('请先选择图层', 'Choose a layer first'));
-      const created = await addFeature(selectedLayer.id, payload);
-      setSelectedFeatureId(created?.id || null);
+    onSave: async (payload, { target } = {}) => {
+      if (!canEdit) throw new Error(text('当前为只读权限', 'This map is read-only'));
+      const latest = mapDataLatestRef.current;
+      const existing = target?.featureId ? latest?.layers.flatMap((layer) => layer.features).find((feature) => feature.id === target.featureId) : null;
+      let data, historyWarning;
+      try {
+        data = await performEdit('Save directions layer', (expectedFingerprint) => api.saveDirections(mapId, {
+          ...payload,
+          style: existing ? { ...payload.style, ...existing.style, routeData: payload.style.routeData } : payload.style,
+          layerId: target?.layerId ?? undefined, featureId: target?.featureId ?? undefined,
+          expectedFingerprint, expectedVersion: target?.featureVersion ?? existing?.version ?? latest.version,
+        }));
+      } catch (saveError) {
+        if (!saveError.operationSaved || !saveError.savedData?.savedFeatureId) throw saveError;
+        data = saveError.savedData;
+        historyWarning = saveError.message;
+      }
+      setSelectedLayerId(data.savedLayerId);
+      setSelectedFeatureId(null);
+      setExpandedLayers((current) => ({ ...current, [data.savedLayerId]: true }));
+      setToast(historyWarning || text('路线图层已保存', 'Directions layer saved'));
+      const feature = data.layers.flatMap((layer) => layer.features).find((item) => item.id === data.savedFeatureId);
+      return { layerId: data.savedLayerId, featureId: data.savedFeatureId, featureVersion: feature?.version };
     },
     onError: setToast,
     onFocus: (positions) => mapRef.current?.fitPositions(positions, 16),
@@ -550,6 +572,23 @@ export default function MapEditor({ mapId }) {
     onLocate: (place) => { if (place.position) mapRef.current?.setView(place.position, 16); },
     toast: setToast,
   });
+  useEffect(() => {
+    if (!directions.visible || (isMobile && sheetState === 'collapsed')) return;
+    const frame = requestAnimationFrame(() => routeEditorRef.current?.scrollIntoView({ block: 'nearest' }));
+    return () => cancelAnimationFrame(frame);
+  }, [directions.visible, directions.target?.layerId, isMobile, sheetState]);
+  useEffect(() => {
+    if (!directions.target?.layerId || !mapData || saving || editorHistory.busy) return;
+    if (!mapData.layers.some((layer) => layer.id === directions.target.layerId)) directions.close();
+  }, [mapData, directions.target?.layerId, directions.close, saving, editorHistory.busy]);
+  useEffect(() => {
+    if (!directions.visible || !directions.isSaved || saving || editorHistory.busy) return;
+    const layer = mapData?.layers.find((item) => item.id === directions.target?.layerId);
+    const feature = layer?.features.find((item) => item.id === directions.target?.featureId);
+    if (feature && feature.version !== directions.target.featureVersion) {
+      directions.openFrom({ savedFeature: feature, layerId: layer.id, featureId: feature.id });
+    }
+  }, [mapData, directions.visible, directions.isSaved, directions.target, directions.openFrom, saving, editorHistory.busy]);
   const searchQuery = placeSearch.query;
   const searchResults = placeSearch.results;
   const searching = placeSearch.loading;
@@ -705,8 +744,8 @@ export default function MapEditor({ mapId }) {
     return () => document.removeEventListener('pointerdown', dismissOpenMenus, true);
   }, [basePicker, layerMenu, moreMenu, styleTarget]);
 
-  const selectedLayer = useMemo(() => mapData?.layers.find((layer) => layer.id === selectedLayerId) || mapData?.layers[0], [mapData, selectedLayerId]);
-  const allFeatureIds = useMemo(() => new Set(mapData?.layers.flatMap((layer) => layer.features.map((feature) => feature.id)) || []), [mapData]);
+  const contentLayers = useMemo(() => mapData?.layers.filter((layer) => layer.kind !== 'directions') || [], [mapData]);
+  const selectedLayer = contentLayers.find((layer) => layer.id === selectedLayerId) || contentLayers[0];
   const selectedFeatureContext = useMemo(() => {
     if (!mapData || selectedFeatureId === null) return null;
     for (const layer of mapData.layers) {
@@ -715,6 +754,11 @@ export default function MapEditor({ mapId }) {
     }
     return null;
   }, [mapData, selectedFeatureId]);
+  const visibleMapData = useMemo(() => {
+    if (!mapData || !directions.visible || !directions.selectedAlternative || !directions.target?.featureId) return mapData;
+    // The active route preview replaces its saved geometry while being edited.
+    return { ...mapData, layers: mapData.layers.map((layer) => ({ ...layer, features: layer.features.filter((feature) => feature.id !== directions.target.featureId) })) };
+  }, [mapData, directions.visible, directions.selectedAlternative, directions.target?.featureId]);
 
   const replaceData = (data) => {
     if (Number(data?.version) < Number(mapDataLatestRef.current?.version)) return;
@@ -888,8 +932,13 @@ export default function MapEditor({ mapId }) {
     setSelectedFeatureId(feature.id);
     setSelectedLayerId(layer.id);
     if (focus) mapRef.current?.focusFeature(feature.id);
-    if (edit) setFeatureDialog({ ...feature, layerId: layer.id });
-  }, []);
+    if (layer.kind === 'directions') {
+      placeSearch.clear(); setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null);
+      setSidebarCollapsed(false); setSheetState('half');
+      setExpandedLayers((current) => ({ ...current, [layer.id]: true }));
+      directions.openFrom({ savedFeature: feature, layerId: layer.id, featureId: feature.id });
+    } else if (edit) setFeatureDialog({ ...feature, layerId: layer.id });
+  }, [directions.openFrom, placeSearch.clear]);
 
   const uploadFeatureAttachments = async (featureId, files) => {
     if (!canEdit) throw new Error(text('当前为只读权限', 'This map is read-only'));
@@ -1136,22 +1185,28 @@ export default function MapEditor({ mapId }) {
 
   const openDirections = (settings = {}) => {
     placeSearch.clear(); setSelectedFeatureId(null); setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null);
-    setSidebarCollapsed(false); setSheetState('half'); directions.openFrom(settings);
+    if (settings.layerId) {
+      setSelectedLayerId(settings.layerId);
+      setExpandedLayers((current) => ({ ...current, [settings.layerId]: true }));
+    }
+    setSidebarCollapsed(false); setSheetState('half');
+    directions.openFrom({ newLayer: !settings.savedFeature && !settings.routeData, ...settings });
   };
   const changeTool = (tool) => {
     setContextMenu(null); setSelectedFeatureId(null); setDraftPoints([]); setHoverPoint(null); draftRedoRef.current = [];
     if (tool === 'route') { openDirections(); return; }
+    if (['marker', 'line', 'polygon'].includes(tool) && selectedLayer) setSelectedLayerId(selectedLayer.id);
     directions.close(); placeSearch.clear(); setActiveTool(tool);
     lastHistoryDomainRef.current = 'server';
     if (tool === 'measure') { if (isMobile) setSheetState('collapsed'); measurementJournalRef.current = {past: [], future: []}; updateMeasurement([], false, false); lastHistoryDomainRef.current = 'measurement'; }
   };
   const searchPlaces = async (event) => {
-    directions.close(); setActiveTool('pan'); setSelectedFeatureId(null); setSidebarCollapsed(false); setSheetState('half');
+    setActiveTool('pan'); setSelectedFeatureId(null); setSidebarCollapsed(false); setSheetState('half');
     const places = await placeSearch.onSearch(event);
     if (places.length) mapRef.current?.fitPositions(places.map((place) => place.position), 15);
   };
   const openPlaceDetail = (place) => {
-    directions.close(); setSelectedFeatureId(null); setActiveTool('pan');
+    setSelectedFeatureId(null); setActiveTool('pan');
     searchViewRef.current = { center: mapRef.current?.getCenter(), zoom: mapRef.current?.getZoom() };
     return placeSearch.openDetail(place);
   };
@@ -1161,12 +1216,16 @@ export default function MapEditor({ mapId }) {
     if (view?.center) mapRef.current?.setView([view.center.lng, view.center.lat], view.zoom);
   };
   const searchPanelState = { ...placeSearch, openDetail: openPlaceDetail, backToResults: backToSearchResults };
-  const chooseSuggestion = (suggestion) => { directions.close(); setActiveTool('pan'); setSelectedFeatureId(null); placeSearch.chooseSuggestion(suggestion); };
+  const chooseSuggestion = (suggestion) => { setActiveTool('pan'); setSelectedFeatureId(null); placeSearch.chooseSuggestion(suggestion); };
   const handleSearchKey = placeSearch.handleKeyDown;
   const addSearchResult = async (candidate) => {
     if (!selectedLayer || !candidate.position || !canEdit) return;
     const created = await addFeature(selectedLayer.id, { name: candidate.name, description: candidate.address || '', geometry: { type: 'Point', coordinates: candidate.position }, style: { color: selectedLayer.style.color || '#1a73e8', poi: { id: candidate.poiId, address: candidate.address, type: candidate.type, phone: candidate.phone } } });
-    placeSearch.clear(); if (created) setSelectedFeatureId(created.id); setToast(created?.historyWarning || text('地点已添加到地图', 'Place added to your map'));
+    placeSearch.clear();
+    setSelectedLayerId(selectedLayer.id);
+    setExpandedLayers((current) => ({ ...current, [selectedLayer.id]: true }));
+    if (created) setSelectedFeatureId(created.id);
+    setToast(created?.historyWarning || text('地点已添加到地图', 'Place added to your map'));
   };
   const replanSavedRoute = async (feature, payload) => {
     const latest = mapDataLatestRef.current?.layers.flatMap((layer) => layer.features).find((item) => item.id === feature.id);
@@ -1188,6 +1247,7 @@ export default function MapEditor({ mapId }) {
   };
   const addMarkerAt = (position) => {
     if (!canEdit || !selectedLayer) return;
+    setSelectedLayerId(selectedLayer.id);
     setFeatureDialog({ name: text('新地点','New place'), description:'', geometry:{type:'Point',coordinates:position}, style:{color:selectedLayer.style.color || '#1a73e8'}, layerId:selectedLayer.id });
     setActiveTool('pan'); setContextMenu(null);
   };
@@ -1227,7 +1287,6 @@ export default function MapEditor({ mapId }) {
   if (error || !mapData) return <div className="full-error"><CircleHelp size={38} /><h1>{t('editor.mapDeleted')}</h1><p>{error}</p><button className="primary-button" onClick={() => navigate('/')}>{t('editor.backLibrary')}</button></div>;
 
   const activeBaseMapKey = normalizeBaseMapKey(mapData.base_map);
-  const activeBaseMap = BASE_MAPS[activeBaseMapKey];
   const previewMode = new URLSearchParams(window.location.search).get('preview') === '1';
   const draftPoint = featureDialog && !featureDialog.id && featureDialog.geometry?.type === 'Point' ? featureDialog : null;
   const selectedPointContext = selectedFeatureContext?.feature.type === 'Point' ? selectedFeatureContext : null;
@@ -1235,6 +1294,9 @@ export default function MapEditor({ mapId }) {
   const mapPopup = isMobile ? null : draftPoint ? {
     position: draftPoint.geometry.coordinates,
     content: <DraftPointCard feature={draftPoint} onSave={saveFeatureDialog} onCancel={() => setFeatureDialog(null)} />,
+  } : activeCandidate?.position && placeSearch.mode === 'detail' ? {
+    position: activeCandidate.position,
+    content: <SearchPlaceCard search={searchPanelState} onAdd={addSearchResult} onDirections={(place) => openDirections({ to: place })} onClose={backToSearchResults} canAdd={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} />,
   } : selectedPointContext ? {
     position: selectedPointContext.feature.geometry.coordinates,
     content: (
@@ -1279,13 +1341,13 @@ export default function MapEditor({ mapId }) {
     }, (locationError) => setToast(locationError.message || '无法获取当前位置。'));
   };
 
+  const routeEditor = <div ref={routeEditorRef} className="route-edit-slot"><DirectionsPanel directions={directions} lang={lang} canSave={canEdit && !editorHistory.busy} embedded onClose={directions.close} /></div>;
+
   if (previewMode) return <PreviewEditorMap mapData={mapData} onExit={() => { window.history.replaceState({}, '', `/maps/${mapId}`); window.dispatchEvent(new PopStateEvent('popstate')); }} />;
 
   return (
     <main className="editor-page">
-      <MobileSheet className={sidebarCollapsed && !directions.visible && !placeSearch.mode ? 'collapsed' : ''} state={sheetState} onStateChange={setSheetState} label={directions.visible ? text('路线规划','Directions') : placeSearch.mode ? text('地点','Places') : t('editor.layerPanel')} lang={lang} onClose={() => { directions.close(); placeSearch.clear(); setSheetState('collapsed'); }}>
-      {directions.visible ? <DirectionsPanel directions={directions} lang={lang} canSave={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} onClose={directions.close} /> : placeSearch.mode ? <SearchResultsPanel search={searchPanelState} onDirections={(place) => openDirections({to:place})} onAdd={addSearchResult} onClose={placeSearch.clear} canAdd={Boolean(canEdit && selectedLayer)} /> : isMobile && draftPoint ? <DraftPointCard feature={draftPoint} onSave={saveFeatureDialog} onCancel={() => setFeatureDialog(null)} /> : isMobile && selectedPointContext ? <PlaceFeatureCard canEdit={canEdit && !editorHistory.busy} feature={selectedPointContext.feature} layer={selectedPointContext.layer} onClose={() => setSelectedFeatureId(null)} onCopyCoordinates={() => copyFeatureCoordinates(selectedPointContext.feature)} onStyle={(color) => applyCardStyle(selectedPointContext.feature,color)} onSave={(changes) => saveCardDetails(selectedPointContext.feature,changes)} onMedia={() => requestQuickMedia(selectedPointContext.feature)} onRoute={() => startRouteFromFeature(selectedPointContext.feature,selectedPointContext.layer)} onDelete={() => deleteFeatureFromCard(selectedPointContext.feature)} /> : <>
-
+      <MobileSheet className={sidebarCollapsed ? 'collapsed' : ''} state={sheetState} onStateChange={setSheetState} label={t('editor.layerPanel')} lang={lang} onClose={() => setSheetState('collapsed')}>
         <section className="map-meta-panel">
           <div className="editor-title-row">
             <button className="icon-button sidebar-back" onClick={() => navigate('/')} aria-label={t('editor.backLibrary')}><ArrowLeft size={20} /></button>
@@ -1307,23 +1369,28 @@ export default function MapEditor({ mapId }) {
           <button onClick={() => setShareDialog(true)}><Share2 size={16} /> {t('editor.share')}</button>
           <button onClick={() => { window.history.pushState({}, '', `/maps/${mapId}?preview=1`); window.location.reload(); }}><Eye size={16} /> {t('editor.preview')}</button>
         </div>
-        <DrawingToolbar activeTool={activeTool} canEdit={canEdit} onTool={changeTool} canUndo={canUndo && !editorHistory.busy} canRedo={canRedo && !editorHistory.busy} onUndo={undo} onRedo={redo} />
-        <div className="editor-panel-tabs" role="tablist" aria-label={text('地图内容', 'Map content')}><button role="tab" aria-selected={panelTab === 'layers'} className={panelTab === 'layers' ? 'active' : ''} onClick={() => setPanelTab('layers')}>{text('图层', 'Layers')}</button><button role="tab" aria-selected={panelTab === 'places'} className={panelTab === 'places' ? 'active' : ''} onClick={() => setPanelTab('places')}>{text('地点', 'Places')}</button><span>{mapData.layers.reduce((total, layer) => total + layer.features.length, 0)} {text('个要素', 'features')}</span></div>
-        {panelTab === 'places' ? <div className="editor-places-list" role="tabpanel">{mapData.layers.flatMap((layer) => layer.features.map((feature) => <button key={feature.id} className={selectedFeatureId === feature.id ? 'active' : ''} onClick={() => selectFeature(feature, layer)}><span style={{ color: feature.style?.color || layer.style.color || '#1a73e8' }}>{feature.type === 'Point' ? <MapPin size={19} /> : <Route size={19} />}</span><span><b>{feature.name}</b><small>{layer.name}</small></span></button>))}{!allFeatureIds.size ? <p>{text('在地图上添加地点，让旅程开始。', 'Add a place to start your map.')}</p> : null}</div> : null}
-        <LayerPanel layers={mapData.layers} selectedLayerId={selectedLayerId} selectedFeatureId={selectedFeatureId} expandedLayers={expandedLayers} onToggleExpanded={(id) => setExpandedLayers((current) => ({...current,[id]:!current[id]}))} onSelectLayer={setSelectedLayerId} onSelectFeature={selectFeature} onToggleLayer={toggleLayer} onRenameLayer={renameLayer} onDeleteLayer={removeLayer} onImport={(layer) => {setSelectedLayerId(layer.id); importRef.current?.click();}} onTable={setTableLayer} onExport={exportCsv} onFeatureStyle={(feature,layer) => setStyleTarget(styleTarget?.feature?.id === feature.id ? null : {layerId:layer.id,feature})} onLayerStyle={setLayerStyleTarget} onEditFeature={(feature,layer) => setFeatureDialog({...feature,layerId:layer.id})} onReorderLayers={(layerIds) => performEdit('Reorder layers',(expectedFingerprint) => api.reorderLayers(mapId,{layerIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onReorderFeatures={(layerId,featureIds) => performEdit('Reorder features',(expectedFingerprint) => api.reorderFeatures(mapId,{layerId,featureIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onMoveFeature={(featureId,layerId,index) => performEdit('Move feature to layer',(expectedFingerprint) => {const feature=mapDataLatestRef.current.layers.flatMap((layer)=>layer.features).find((item)=>item.id===featureId);return api.moveFeature(featureId,{layerId,index,expectedFingerprint,expectedVersion:feature?.version});})} canEdit={canEdit && !editorHistory.busy} peers={peers} user={user} t={t} lang={lang} hidden={panelTab !== 'layers'} renderFeatureStyle={(feature,layer) => styleTarget?.feature?.id === feature.id ? <div className="style-popover-anchor" data-style-popover-root onClick={(event)=>event.stopPropagation()}><FeatureStylePopover feature={feature} layers={mapData.layers} defaultLayerId={layer.id} attachments={feature.attachments || []} onSave={saveStylePopover} onDelete={deleteStylePopoverFeature} onUploadAttachments={uploadFeatureAttachments} onDeleteAttachment={deleteFeatureAttachment} /></div> : null} />
+        {isMobile && placeSearch.mode ? <SearchResultsPanel search={searchPanelState} onDirections={(place) => openDirections({ to: place })} onAdd={addSearchResult} onClose={placeSearch.clear} onReturnToLayers={placeSearch.clear} canAdd={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} compact /> : null}
+        {isMobile && draftPoint ? <DraftPointCard feature={draftPoint} onSave={saveFeatureDialog} onCancel={() => setFeatureDialog(null)} /> : null}
+        {isMobile && selectedPointContext ? <PlaceFeatureCard canEdit={canEdit && !editorHistory.busy} feature={selectedPointContext.feature} layer={selectedPointContext.layer} onClose={() => setSelectedFeatureId(null)} onCopyCoordinates={() => copyFeatureCoordinates(selectedPointContext.feature)} onStyle={(color) => applyCardStyle(selectedPointContext.feature,color)} onSave={(changes) => saveCardDetails(selectedPointContext.feature,changes)} onMedia={() => requestQuickMedia(selectedPointContext.feature)} onRoute={() => startRouteFromFeature(selectedPointContext.feature,selectedPointContext.layer)} onDelete={() => deleteFeatureFromCard(selectedPointContext.feature)} /> : null}
+        {directions.visible && !mapData.layers.some((layer) => layer.id === directions.target?.layerId) ? <section className="pending-directions-layer">
+          <header><Route size={17} /><b>{text('无标题路线', 'Untitled directions')}</b><button className="icon-button" onClick={directions.close} aria-label={text('关闭路线图层', 'Close directions layer')}><X size={16} /></button></header>
+          {routeEditor}
+        </section> : null}
+        <LayerPanel layers={mapData.layers} selectedLayerId={selectedLayerId} selectedFeatureId={selectedFeatureId} expandedLayers={expandedLayers} onToggleExpanded={(id) => setExpandedLayers((current) => ({...current,[id]:!current[id]}))} onSelectLayer={setSelectedLayerId} onSelectFeature={selectFeature} onToggleLayer={toggleLayer} onRenameLayer={renameLayer} onDeleteLayer={removeLayer} onImport={(layer) => {setSelectedLayerId(layer.id); importRef.current?.click();}} onTable={setTableLayer} onExport={exportCsv} onFeatureStyle={(feature,layer) => setStyleTarget(styleTarget?.feature?.id === feature.id ? null : {layerId:layer.id,feature})} onLayerStyle={setLayerStyleTarget} onEditFeature={(feature,layer) => setFeatureDialog({...feature,layerId:layer.id})} onReorderLayers={(layerIds) => performEdit('Reorder layers',(expectedFingerprint) => api.reorderLayers(mapId,{layerIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onReorderFeatures={(layerId,featureIds) => performEdit('Reorder features',(expectedFingerprint) => api.reorderFeatures(mapId,{layerId,featureIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onMoveFeature={(featureId,layerId,index) => performEdit('Move feature to layer',(expectedFingerprint) => {const feature=mapDataLatestRef.current.layers.flatMap((layer)=>layer.features).find((item)=>item.id===featureId);return api.moveFeature(featureId,{layerId,index,expectedFingerprint,expectedVersion:feature?.version});})} canEdit={canEdit && !editorHistory.busy} peers={peers} user={user} t={t} lang={lang} renderDirections={(layer) => directions.visible && layer.id === directions.target?.layerId ? routeEditor : null} onEditDirections={(layer, feature) => openDirections({ savedFeature: feature, layerId: layer.id, featureId: feature.id })} renderFeatureStyle={(feature,layer) => styleTarget?.feature?.id === feature.id ? <div className="style-popover-anchor" data-style-popover-root onClick={(event)=>event.stopPropagation()}><FeatureStylePopover feature={feature} layers={contentLayers} defaultLayerId={layer.id} attachments={feature.attachments || []} onSave={saveStylePopover} onDelete={deleteStylePopoverFeature} onUploadAttachments={uploadFeatureAttachments} onDeleteAttachment={deleteFeatureAttachment} /></div> : null} />
+        <BaseMapPicker value={activeBaseMapKey} open={basePicker} onToggle={() => setBasePicker((value) => !value)} onChange={(key) => { if (canEdit) updateMap({ base_map: key }); else setMapData((current) => ({ ...current, base_map: key })); setBasePicker(false); }} traffic={trafficVisible} onTrafficChange={setTrafficVisible} lang={lang} />
         <div className="sidebar-bottom"><button onClick={() => navigate('/admin')}><Database size={16} /> {t('editor.dbAdmin')}</button><span>Open My Map</span></div>
-      </>}
       </MobileSheet>
 
       <section className="map-workspace">
         <button className="mobile-panel-toggle" onClick={() => setSheetState((current) => current === 'collapsed' ? 'half' : 'collapsed')} aria-label={t('editor.layerPanel')}><Menu size={20} /></button>
         <form className="map-search-bar" onSubmit={searchPlaces}>
           <Search className="search-leading-icon" size={20} />
-          <input ref={searchInputRef} value={searchQuery} onChange={(event) => { directions.close(); setSelectedFeatureId(null); setSearchQuery(event.target.value); }} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)} onKeyDown={handleSearchKey} placeholder={t('editor.searchPlace')} aria-label={t('editor.searchPlace')} role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && searchSuggestions.length > 0} aria-controls="map-search-suggestions" aria-activedescendant={suggestionIndex >= 0 && suggestionsOpen ? `map-suggestion-${suggestionIndex}` : undefined} />
+          <input ref={searchInputRef} value={searchQuery} onChange={(event) => { setSelectedFeatureId(null); setSearchQuery(event.target.value); }} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)} onKeyDown={handleSearchKey} placeholder={t('editor.searchPlace')} aria-label={t('editor.searchPlace')} role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && searchSuggestions.length > 0} aria-controls="map-search-suggestions" aria-activedescendant={suggestionIndex >= 0 && suggestionsOpen ? `map-suggestion-${suggestionIndex}` : undefined} />
           {searchQuery ? <button type="button" className="icon-button" onClick={placeSearch.clear} aria-label={t('editor.clearSearch')}><X size={18} /></button> : null}
           <button className="search-submit" aria-label={t('editor.search')} disabled={searching}><Search size={19} /></button>
-          <button type="button" className="directions-shortcut" title={t('editor.toolRoute')} aria-label={t('editor.toolRoute')} onClick={() => openDirections()}><GitFork size={20} /></button>
         </form>
+        <DrawingToolbar activeTool={directions.visible ? 'route' : activeTool} canEdit={Boolean(canEdit && selectedLayer)} onTool={changeTool} canUndo={canUndo && !editorHistory.busy} canRedo={canRedo && !editorHistory.busy} onUndo={undo} onRedo={redo} />
+        {!isMobile && (placeSearch.mode === 'results' || (placeSearch.mode === 'detail' && !activeCandidate?.position)) ? <div className="map-search-results-popover"><SearchResultsPanel search={searchPanelState} onDirections={(place) => openDirections({ to: place })} onAdd={addSearchResult} onClose={placeSearch.clear} canAdd={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} compact /></div> : null}
         {suggestionsOpen && searchSuggestions.length ? <div id="map-search-suggestions" className="map-search-suggestions" role="listbox" aria-label={text('地点联想', 'Suggested places')}>{searchSuggestions.map((suggestion, index) => <button key={suggestion.id} type="button" id={`map-suggestion-${index}`} role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseSuggestion(suggestion)}><MapPin size={18} /><span><b>{suggestion.name}</b><small>{suggestion.address || suggestion.city}</small></span></button>)}</div> : null}
         {toolInstruction ? <div className="tool-instruction">{(activeTool === 'measure' ? measurementPoints.length : draftPoints.length) ? `${activeTool === 'measure' ? measurementPoints.length : draftPoints.length} ${text('个顶点', 'vertices')} · ` : ''}{toolInstruction}{canFinishDraft ? <button className="finish-drawing-button" onClick={() => finishDraft(activeTool, activeTool === 'measure' ? measurementPoints : draftPoints).catch(() => {})} aria-label={text('完成绘制', 'Finish drawing')}>{text('完成', 'Finish')}</button> : null}<button onClick={() => { setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null); }} aria-label={text('取消绘制', 'Cancel drawing')}><X size={15} /></button></div> : null}
         {canEdit && selectedFeatureContext && activeTool === 'pan' ? <div className="selected-edit-tip">{selectedFeatureContext.feature.type === 'Point' ? text('拖动标记以调整位置', 'Drag the marker to move this place') : selectedFeatureContext.feature.style?.routeData ? text('拖动路线以重新规划','Drag the route to replan') : text('拖动顶点以调整形状', 'Drag a vertex to reshape this feature')}</div> : null}
@@ -1334,7 +1401,7 @@ export default function MapEditor({ mapId }) {
           draftMarker={draftPoint ? { position: draftPoint.geometry.coordinates, color: draftPoint.style?.color, icon: draftPoint.style?.icon || selectedLayer?.style?.icon } : null}
           draftPoints={activeTool === 'measure' ? [] : draftPoints}
           hoverPoint={hoverPoint}
-          mapData={mapData}
+          mapData={visibleMapData}
           editable={canEdit}
           trafficVisible={trafficVisible}
           measurementPoints={measurementPoints}
@@ -1342,6 +1409,7 @@ export default function MapEditor({ mapId }) {
           onMeasurementChange={(points) => updateMeasurement(points)}
           onContextMenu={onMapContextMenu}
           onPoiSelect={(poi) => openPlaceDetail({...poi,source:'AMap'})}
+          poiEnabled={activeTool === 'pan' && !directions.visible && !draftPoint}
           onViewChange={(view) => { if(view.source === 'user') placeSearch.setViewChanged(); }}
           routeAlternatives={directions.alternatives.map((route)=>({...route,selected:route.id===directions.selectedAlternativeId}))}
           routePlan={directions.selectedAlternative && directions.stops.every((stop)=>stop.position) ? {...directions.selectedAlternative,stops:directions.stops} : null}
@@ -1357,7 +1425,7 @@ export default function MapEditor({ mapId }) {
           onMapDoubleClick={(point)=>handleDoubleClick(point).catch(()=>{})}
           onMouseMove={(point) => setHoverPoint(activeTool === 'pan' || !point ? null : [point.lng, point.lat])}
           onMoveEnd={(center) => { currentCenterRef.current = center; }}
-          onPopupClose={() => setSelectedFeatureId(null)}
+          onPopupClose={() => { if (placeSearch.mode === 'detail') backToSearchResults(); else setSelectedFeatureId(null); }}
           onReady={(controller) => { mapRef.current = controller; currentCenterRef.current = controller.getCenter(); }}
           onZoomStateChange={setZoomState}
           popup={mapPopup}
@@ -1385,29 +1453,11 @@ export default function MapEditor({ mapId }) {
         {measurementPoints.length ? <MeasurePanel points={measurementPoints} distance={measurementDistance(measurementPoints,measurementClosed)} area={measurementClosed ? measurementArea(measurementPoints) : 0} closed={measurementClosed} onClear={()=>updateMeasurement([],false)} onRemoveLast={()=>updateMeasurement((points)=>points.slice(0,-1))} onClose={()=>{updateMeasurement([],false);setActiveTool('pan');}} onToggleClosed={()=>updateMeasurement(measurementPoints,!measurementClosed)} lang={lang} /> : null}
         {contextMenu ? <ContextMenu point={contextPosition} screen={contextMenu.screen} onHere={()=>{const position=contextPosition;setContextMenu(null);directions.close();placeSearch.reverseGeocodeDetail(position);}} onFrom={()=>{openDirections({from:{position:contextPosition}});setContextMenu(null);}} onTo={()=>{openDirections({to:{position:contextPosition}});setContextMenu(null);}} onMeasure={()=>startMeasurement(contextPosition)} onAddMarker={()=>addMarkerAt(contextPosition)} onClose={()=>setContextMenu(null)} canEdit={Boolean(canEdit&&selectedLayer)} lang={lang} /> : null}
         <div className="map-control-stack"><button onClick={async () => { try { if (document.fullscreenElement) await document.exitFullscreen(); else if (document.querySelector('.editor-page').requestFullscreen) await document.querySelector('.editor-page').requestFullscreen(); else setToast(text('当前浏览器不支持全屏。', 'Fullscreen is unavailable.')); } catch { setToast(text('无法进入全屏。', 'Unable to enter fullscreen.')); } }} aria-label={text('全屏', 'Fullscreen')}>{fullscreen ? <Minimize size={19} /> : <Maximize size={19} />}</button><span /><button onClick={locateUser} aria-label={t('editor.locate')}><LocateFixed size={19} /></button><span /><button disabled={zoomState.zoom === null || zoomState.zoom >= zoomState.maxZoom} onClick={() => mapRef.current?.zoomIn()} aria-label={t('editor.zoomIn')}><ZoomIn size={19} /></button><button disabled={zoomState.zoom === null || zoomState.zoom <= zoomState.minZoom} onClick={() => mapRef.current?.zoomOut()} aria-label={t('editor.zoomOut')}><ZoomOut size={19} /></button></div>
-        <section className={`base-map-stack${basePicker ? ' open' : ''}`} data-base-picker-root aria-label={t('editor.basemap')}>
-          <button className="base-map-stack-toggle" onClick={() => setBasePicker((value) => !value)} aria-expanded={basePicker} aria-label={t('editor.switchBasemap', { name: activeBaseMap.name })} title={`${t('editor.basemap')} · ${activeBaseMap.name}`}>
-            <span className="base-map-stack-thumb" style={baseMapPreviewStyle(activeBaseMapKey)} />
-            <Layers size={15} />
-            <span className="base-map-toggle-label">{t('editor.basemap')}</span>
-          </button>
-          {basePicker ? (
-            <div className="base-map-stack-fan">
-              {Object.entries(BASE_MAPS).map(([key, value]) => (
-                <button key={key} type="button" className={activeBaseMapKey === key ? 'active' : ''} aria-pressed={activeBaseMapKey === key} aria-label={`${value.name}（${value.provider}）`} title={`${value.englishName} · ${value.description}`} onClick={() => { if (canEdit) updateMap({ base_map: key }); else setMapData((current) => ({ ...current, base_map: key })); setBasePicker(false); }}>
-                  <span className="base-map-stack-card" style={baseMapPreviewStyle(key)} />
-                  <span className="base-map-stack-label">{value.name}</span>
-                </button>
-              ))}
-              <button type="button" className={`traffic-toggle${trafficVisible ? ' active' : ''}`} aria-pressed={trafficVisible} onClick={() => setTrafficVisible((visible) => !visible)}><Car size={22} /><span className="base-map-stack-label">{text('实时路况', 'Traffic')}</span></button>
-            </div>
-          ) : null}
-        </section>
       </section>
 
       <input ref={importRef} type="file" className="visually-hidden" accept=".csv,.tsv,.geojson,.json,.kml,.gpx" onChange={importFile} />
       <input ref={quickMediaInputRef} type="file" className="visually-hidden" accept={MEDIA_ACCEPT} multiple onChange={handleQuickMediaSelection} aria-label="上传地点图片或视频" />
-      {featureDialog && !draftPoint ? <FeatureDialog feature={featureDialog} layers={mapData.layers} defaultLayerId={selectedLayer?.id} onSave={saveFeatureDialog} onUploadAttachments={uploadFeatureAttachments} onDeleteAttachment={deleteFeatureAttachment} onDelete={(feature) => { if (window.confirm(`删除“${feature.name}”？`)) { deleteFeature(feature); setFeatureDialog(null); } }} onClose={() => setFeatureDialog(null)} /> : null}
+      {featureDialog && !draftPoint ? <FeatureDialog feature={featureDialog} layers={contentLayers} defaultLayerId={selectedLayer?.id} onSave={saveFeatureDialog} onUploadAttachments={uploadFeatureAttachments} onDeleteAttachment={deleteFeatureAttachment} onDelete={(feature) => { if (window.confirm(`删除“${feature.name}”？`)) { deleteFeature(feature); setFeatureDialog(null); } }} onClose={() => setFeatureDialog(null)} /> : null}
       {layerStyleTarget ? <LayerStyleDialog layer={layerStyleTarget} onSave={applyLayerStyle} onClose={()=>setLayerStyleTarget(null)} lang={lang} /> : null}
       {shortcutDialog ? <Modal title={text('键盘快捷键','Keyboard shortcuts')} onClose={()=>setShortcutDialog(false)}><div className="editor-shortcuts"><p>Ctrl / ⌘ + Z — {text('撤销','Undo')}</p><p>Ctrl / ⌘ + Shift + Z / Ctrl + Y — {text('重做','Redo')}</p><p>Backspace / Delete — {text('移除最后顶点或删除选中要素','Remove last point or selected feature')}</p><p>Enter — {text('完成绘制','Finish drawing')}</p><p>Escape — {text('关闭菜单或取消当前工具','Close menu or cancel current tool')}</p><p>H / M / L / P / R / D — {text('平移 / 标记 / 线 / 区域 / 路线 / 测距','Pan / Marker / Line / Shape / Directions / Measure')}</p><p>Ctrl / ⌘ + K — {text('搜索','Search')}</p><p>Alt + ↑ / ↓ — {text('在图层排序按钮上移动项目','Move focused layer or feature')}</p></div></Modal> : null}
       {shareDialog ? <ShareDialog map={mapData} share={share} onGenerate={generateShare} onClose={() => setShareDialog(false)} /> : null}

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -349,6 +349,140 @@ test('atomic ordering, uniform styles and conflict-safe content history', { time
       assert.equal(feature(await get(), featureA), undefined);
     });
 
+    let routeLayerId;
+    let routeFeatureId;
+    const routeGeometry = { type: 'LineString', coordinates: [[121.47, 31.23], [121.471, 31.235], [121.48, 31.24]] };
+    const routeStyle = {
+      color: '#1a73e8', weight: 5,
+      routeData: {
+        mode: 'walking', stops: [{ text: 'A', position: [121.47, 31.23] }, { text: 'B', position: [121.48, 31.24] }],
+        selectedAlternativeIndex: 0, distance: 1520, duration: 1300,
+        steps: [{ instruction: 'Walk along the river', distance: 1520, duration: 1300 }], segmentPaths: [routeGeometry.coordinates],
+      },
+    };
+    await t.test('directions save creates its own persistent layer and edits preserve both IDs atomically', async () => {
+      const before = await get();
+      const broadcast = waitForMessage(socket, (message) => message.action === 'map.updated');
+      const saved = await request('POST', `${endpoint}/directions`, owner.sessionId, {
+        name: 'A to B', description: 'Planned walking route', geometry: routeGeometry, style: routeStyle,
+        expectedFingerprint: before.contentFingerprint, expectedVersion: before.version,
+      });
+      assert.equal(saved.status, 201);
+      routeLayerId = saved.value.savedLayerId;
+      routeFeatureId = saved.value.savedFeatureId;
+      assert.equal(saved.value.createdLayerId, routeLayerId);
+      assert.equal(saved.value.createdFeatureId, routeFeatureId);
+      const layer = saved.value.layers.find((item) => item.id === routeLayerId);
+      assert.equal(layer.kind, 'directions');
+      assert.equal(layer.name, 'A to B');
+      assert.equal(layer.features.length, 1);
+      assert.equal(layer.features[0].id, routeFeatureId);
+      assert.deepEqual(layer.features[0].style.routeData, routeStyle.routeData);
+      const op = await broadcast;
+      assert.equal(op.mapVersion, saved.value.version);
+      assert.equal(op.contentFingerprint, saved.value.contentFingerprint);
+      assert.equal((await get()).layers.find((item) => item.id === routeLayerId).kind, 'directions');
+      const changed = await request('POST', `${endpoint}/directions`, owner.sessionId, {
+        layerId: routeLayerId, featureId: routeFeatureId, name: 'Updated walking route', geometry: routeGeometry,
+        style: { ...routeStyle, routeData: { ...routeStyle.routeData, duration: 1400 } },
+        expectedFingerprint: saved.value.contentFingerprint, expectedVersion: layer.features[0].version,
+      });
+      assert.equal(changed.status, 200);
+      assert.equal(changed.value.createdLayerId, undefined);
+      assert.equal(changed.value.savedLayerId, routeLayerId);
+      assert.equal(changed.value.savedFeatureId, routeFeatureId);
+      assert.equal(changed.value.layers.length, saved.value.layers.length);
+      assert.equal(changed.value.layers.find((item) => item.id === routeLayerId).name, 'Updated walking route');
+      assert.equal(feature(changed.value, routeFeatureId).style.routeData.duration, 1400);
+      assert.ok(feature(changed.value, routeFeatureId).version > layer.features[0].version);
+      assert.equal((await request('POST', `${endpoint}/directions`, owner.sessionId, {
+        featureId: routeFeatureId, geometry: routeGeometry, style: routeStyle, expectedVersion: layer.features[0].version,
+      })).status, 409);
+      const byFeature = await request('POST', `${endpoint}/directions`, owner.sessionId, {
+        featureId: routeFeatureId, geometry: routeGeometry, style: routeStyle, expectedFingerprint: changed.value.contentFingerprint,
+      });
+      assert.equal(byFeature.status, 200);
+      assert.equal(byFeature.value.savedLayerId, routeLayerId);
+      const renamed = await request('PATCH', `/api/layers/${routeLayerId}`, owner.sessionId, {
+        name: '周末游', expectedFingerprint: byFeature.value.contentFingerprint,
+      });
+      assert.equal(renamed.status, 200);
+      const withCustomName = await request('POST', `${endpoint}/directions`, owner.sessionId, {
+        layerId: routeLayerId, featureId: routeFeatureId, name: 'A to 豫园', geometry: routeGeometry, style: routeStyle,
+        expectedFingerprint: renamed.value.contentFingerprint, expectedVersion: feature(renamed.value, routeFeatureId).version,
+      });
+      assert.equal(withCustomName.status, 200);
+      assert.equal(withCustomName.value.layers.find((item) => item.id === routeLayerId).name, '周末游');
+      assert.equal(feature(withCustomName.value, routeFeatureId).name, 'A to 豫园');
+    });
+
+    await t.test('ordinary add, import, move, copying and type changes cannot corrupt a directions layer', async () => {
+      const before = await get();
+      for (const [method, route, body] of [
+        ['POST', `/api/layers/${routeLayerId}/features`, { name: 'Copied point', geometry: point }],
+        ['POST', `/api/layers/${routeLayerId}/features`, { name: 'Second route', geometry: routeGeometry, style: routeStyle }],
+        ['POST', `/api/layers/${routeLayerId}/features/bulk`, { features: [{ geometry: point }] }],
+        ['POST', `/api/features/${featureB}/move`, { layerId: routeLayerId, index: 0 }],
+        ['POST', `/api/features/${routeFeatureId}/move`, { layerId: layerA, index: 0 }],
+        ['PATCH', `/api/features/${featureB}`, { layerId: routeLayerId }],
+        ['PATCH', `/api/features/${routeFeatureId}`, { layerId: layerA }],
+        ['PATCH', `/api/features/${routeFeatureId}`, { geometry: point }],
+        ['PATCH', `/api/features/${routeFeatureId}`, { style: { color: '#ff0000' } }],
+        ['PATCH', `/api/layers/${routeLayerId}`, { kind: 'features' }],
+        ['PATCH', `/api/layers/${layerA}`, { kind: 'directions' }],
+        ['POST', `${endpoint}/layers`, { kind: 'directions', name: 'Empty route' }],
+      ]) {
+        assert.equal((await request(method, route, owner.sessionId, body)).status, 400, `${method} ${route}`);
+        assert.equal((await get()).contentFingerprint, before.contentFingerprint);
+      }
+    });
+
+    await t.test('route validation, cross-map IDs, permissions and fingerprints reject without partial layers', async () => {
+      const before = await get();
+      const good = { geometry: routeGeometry, style: routeStyle, expectedFingerprint: before.contentFingerprint };
+      for (const payload of [
+        { ...good, geometry: point },
+        { ...good, geometry: { type: 'LineString', coordinates: [[999, 31], [121, 31]] } },
+        { ...good, style: { routeData: { mode: 'walking', stops: [] } } },
+        { ...good, style: { ...routeStyle, routeData: { ...routeStyle.routeData, mode: 'unsupported' } } },
+        { ...good, style: { ...routeStyle, routeData: { ...routeStyle.routeData, segmentPaths: [] } } },
+        { ...good, layerId: layerA },
+        { ...good, layerId: otherMap.layers[0].id },
+        { ...good, layerId: routeLayerId, featureId: featureB },
+      ]) {
+        assert.equal((await request('POST', `${endpoint}/directions`, owner.sessionId, payload)).status, 400);
+        assert.equal((await get()).contentFingerprint, before.contentFingerprint);
+      }
+      assert.equal((await request('POST', `${endpoint}/directions`, viewer.sessionId, good)).status, 403);
+      assert.equal((await request('POST', `${endpoint}/directions`, null, good)).status, 401);
+      await request('PATCH', `/api/features/${featureB}`, editor.sessionId, { description: 'Concurrent route guard check' });
+      assert.equal((await request('POST', `${endpoint}/directions`, owner.sessionId, good)).status, 409);
+    });
+
+    await t.test('route feature deletion removes its layer and checkpoints restore both kind and IDs', async () => {
+      const before = await checkpoint();
+      const deleted = await request('DELETE', `/api/features/${routeFeatureId}`, owner.sessionId, { expectedFingerprint: before.fingerprint });
+      assert.equal(deleted.status, 200);
+      assert.equal(deleted.value.layers.some((layer) => layer.id === routeLayerId), false);
+      const restored = await restore(before.token, deleted.value.contentFingerprint);
+      assert.equal(restored.status, 200);
+      const layer = restored.value.map.layers.find((item) => item.id === routeLayerId);
+      assert.equal(layer.kind, 'directions');
+      assert.equal(layer.features.length, 1);
+      assert.equal(layer.features[0].id, routeFeatureId);
+      assert.equal(restored.value.fingerprint, before.fingerprint);
+      const after = await checkpoint();
+      const second = await request('POST', `${endpoint}/directions`, owner.sessionId, {
+        name: 'Another direction layer', geometry: routeGeometry, style: routeStyle, expectedFingerprint: after.fingerprint,
+      });
+      const post = await checkpoint({ expectedFingerprint: second.value.contentFingerprint });
+      assert.equal((await restore(after.token, post.fingerprint)).status, 200);
+      const redone = await restore(post.token, after.fingerprint);
+      assert.equal(redone.status, 200);
+      assert.equal(redone.value.map.layers.find((item) => item.id === second.value.createdLayerId).kind, 'directions');
+      assert.equal(feature(redone.value.map, second.value.createdFeatureId).type, 'LineString');
+    });
+
     await t.test('expired checkpoints and checkpoint retention are bounded; trash blocks new and restored history', async () => {
       const expired = await checkpoint();
       directDb.prepare('UPDATE content_checkpoints SET expires_at = ? WHERE token = ?').run('2000-01-01T00:00:00.000Z', expired.token);
@@ -363,6 +497,7 @@ test('atomic ordering, uniform styles and conflict-safe content history', { time
       assert.equal((await request('POST', `${endpoint}/checkpoints`, owner.sessionId)).status, 404);
       assert.equal((await restore(cp.token, current.contentFingerprint)).status, 404);
       assert.equal((await request('POST', `${endpoint}/reorder`, owner.sessionId, { layerIds: [layerA, layerB] })).status, 404);
+      assert.equal((await request('POST', `${endpoint}/directions`, owner.sessionId, { geometry: routeGeometry, style: routeStyle })).status, 404);
       assert.equal((await request('PATCH', `/api/layers/${layerB}/style`, owner.sessionId, { style: { color: '#ffffff' }, applyToFeatures: true })).status, 404);
     });
   } finally {
@@ -408,6 +543,110 @@ test('legacy features receive stable per-layer positions during schema migration
       assert.deepEqual(migrated.prepare('SELECT id, position FROM features WHERE id IN (3, 5, 7, 9) ORDER BY layer_id, position').all()
         .map((row) => [row.id, row.position]), [[3, 0], [7, 1], [5, 0], [9, 1]]);
       assert.ok(migrated.prepare('PRAGMA table_info(features)').all().some((column) => column.name === 'position'));
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    if (server?.child && server.child.exitCode === null) {
+      const closed = once(server.child, 'exit');
+      server.child.kill();
+      await closed;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy valid routes migrate once with their visibility, IDs, geometry, custom style and media intact', { timeout: 20_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'omm-directions-migration-'));
+  let server;
+  const legacy = new DatabaseSync(path.join(directory, 'content.sqlite'));
+  const created = '2026-01-01T00:00:00.000Z';
+  const geometry = { type: 'LineString', coordinates: [[121.47, 31.23], [121.471, 31.235], [121.48, 31.24]] };
+  const style = { color: '#e85d4a', weight: 7, opacity: 0.58, customNote: 'Keep this route style', routeData: {
+    mode: 'driving', stops: [{ text: 'A', position: [121.47, 31.23] }, { text: 'B', position: [121.48, 31.24] }],
+    selectedAlternativeIndex: 0, distance: 1700, duration: 400, steps: [], segmentPaths: [geometry.coordinates],
+  } };
+  legacy.exec(`
+    CREATE TABLE maps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT 'Owner',
+      visibility TEXT NOT NULL DEFAULT 'private', base_map TEXT NOT NULL DEFAULT 'standard', center_lat REAL NOT NULL DEFAULT 31,
+      center_lng REAL NOT NULL DEFAULT 121, zoom INTEGER NOT NULL DEFAULT 12, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE layers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, map_id INTEGER NOT NULL REFERENCES maps(id) ON DELETE CASCADE, name TEXT NOT NULL,
+      visible INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0, style_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE features (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, layer_id INTEGER NOT NULL REFERENCES layers(id) ON DELETE CASCADE,
+      type TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', geometry_json TEXT NOT NULL,
+      style_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, feature_id INTEGER NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL, original_name TEXT NOT NULL, stored_name TEXT NOT NULL UNIQUE, mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE content_checkpoints (
+      token TEXT PRIMARY KEY, map_id INTEGER NOT NULL, user_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL,
+      fingerprint TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+    );
+  `);
+  legacy.prepare('INSERT INTO maps (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)').run('Legacy mixed map', created, created);
+  legacy.prepare('INSERT INTO layers (id, map_id, name, visible, created_at, updated_at) VALUES (1, 1, ?, 0, ?, ?)').run('Hidden mixed layer', created, created);
+  const insert = legacy.prepare('INSERT INTO features (id, layer_id, type, name, geometry_json, style_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)');
+  insert.run(1, 'Point', 'Ordinary place', JSON.stringify({ type: 'Point', coordinates: [121.47, 31.23] }), '{}', created, created);
+  insert.run(2, 'LineString', 'Legacy planned route', JSON.stringify(geometry), JSON.stringify(style), created, created);
+  insert.run(3, 'LineString', 'Invalid route data', JSON.stringify(geometry), JSON.stringify({ routeData: { mode: 'driving', stops: [] } }), created, created);
+  insert.run(4, 'LineString', 'Ordinary drawn line', JSON.stringify(geometry), JSON.stringify({ color: '#00897b' }), created, created);
+  legacy.prepare(`INSERT INTO attachments (id, feature_id, kind, original_name, stored_name, mime_type, size_bytes, created_at)
+    VALUES (7, 2, 'image', 'historic.png', 'historic.png', 'image/png', 4, ?)`)
+    .run(created);
+  legacy.prepare(`INSERT INTO content_checkpoints (token, map_id, user_id, snapshot_json, fingerprint, created_at, expires_at)
+    VALUES ('old-checkpoint', 1, 1, '{}', ?, ?, ?)`)
+    .run('a'.repeat(64), created, '2099-01-01T00:00:00.000Z');
+  legacy.close();
+  mkdirSync(path.join(directory, 'uploads'));
+  writeFileSync(path.join(directory, 'uploads', 'historic.png'), Buffer.from([137, 80, 78, 71]));
+  try {
+    server = await startServer(directory);
+    let migrated = new DatabaseSync(path.join(directory, 'content.sqlite'));
+    let fingerprint;
+    let layerId;
+    try {
+      const normal = migrated.prepare('SELECT kind, visible FROM layers WHERE id = 1').get();
+      assert.equal(normal.kind, 'features');
+      assert.equal(normal.visible, 0);
+      const layers = migrated.prepare("SELECT * FROM layers WHERE kind = 'directions'").all();
+      assert.equal(layers.length, 1);
+      layerId = layers[0].id;
+      assert.equal(layers[0].visible, 0);
+      assert.equal(layers[0].position, 1);
+      assert.equal(JSON.parse(layers[0].style_json).color, style.color);
+      const route = migrated.prepare('SELECT * FROM features WHERE id = 2').get();
+      assert.equal(route.layer_id, layerId);
+      assert.equal(route.position, 0);
+      assert.deepEqual(JSON.parse(route.geometry_json), geometry);
+      assert.deepEqual(JSON.parse(route.style_json), style);
+      assert.deepEqual(migrated.prepare('SELECT id FROM features WHERE layer_id = 1 ORDER BY position').all().map((row) => row.id), [1, 3, 4]);
+      assert.equal(migrated.prepare('SELECT feature_id FROM attachments WHERE id = 7').get().feature_id, 2);
+      assert.equal(Number(migrated.prepare('SELECT COUNT(*) AS count FROM content_checkpoints').get().count), 0);
+      assert.equal(migrated.prepare('SELECT version FROM maps WHERE id = 1').get().version, 2);
+      fingerprint = JSON.stringify(migrated.prepare('SELECT * FROM layers ORDER BY id').all());
+    } finally {
+      migrated.close();
+    }
+    assert.ok(existsSync(path.join(directory, 'uploads', 'historic.png')));
+    assert.equal((await fetch(`${server.url}/uploads/historic.png`)).status, 200);
+    const closed = once(server.child, 'exit');
+    server.child.kill();
+    await closed;
+    server = await startServer(directory);
+    migrated = new DatabaseSync(path.join(directory, 'content.sqlite'));
+    try {
+      assert.equal(JSON.stringify(migrated.prepare('SELECT * FROM layers ORDER BY id').all()), fingerprint);
+      assert.equal(migrated.prepare('SELECT layer_id FROM features WHERE id = 2').get().layer_id, layerId);
+      assert.equal(migrated.prepare('SELECT version FROM maps WHERE id = 1').get().version, 2);
     } finally {
       migrated.close();
     }

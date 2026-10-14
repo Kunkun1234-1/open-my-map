@@ -33,6 +33,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     map_id INTEGER NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'features' CHECK (kind IN ('features', 'directions')),
     visible INTEGER NOT NULL DEFAULT 1,
     position INTEGER NOT NULL DEFAULT 0,
     style_json TEXT NOT NULL DEFAULT '{}',
@@ -216,6 +217,14 @@ ensureVersionColumn('maps');
 ensureVersionColumn('layers');
 ensureVersionColumn('features');
 
+const layerColumns = db.prepare('PRAGMA table_info(layers)').all();
+const migrateLayerKinds = !layerColumns.some((column) => column.name === 'kind');
+if (migrateLayerKinds) {
+  db.exec("ALTER TABLE layers ADD COLUMN kind TEXT NOT NULL DEFAULT 'features' CHECK (kind IN ('features', 'directions'))");
+  // Old checkpoints predate layer types and must not restore an ambiguous kind.
+  db.prepare('DELETE FROM content_checkpoints').run();
+}
+
 const featureColumns = db.prepare('PRAGMA table_info(features)').all();
 if (!featureColumns.some((column) => column.name === 'position')) {
   db.exec(`
@@ -359,6 +368,8 @@ function ensureProjects() {
 }
 
 ensureProjects();
+
+if (migrateLayerKinds) migrateLegacyDirections();
 
 export function listMaps() {
   return db.prepare(`
@@ -890,6 +901,122 @@ function assertPermutation(requested, existing, message) {
   }
 }
 
+function validDirectionsPosition(position) {
+  return Array.isArray(position) && position.length === 2 && position.every((value) => typeof value === 'number' && Number.isFinite(value))
+    && Math.abs(position[0]) <= 180 && Math.abs(position[1]) <= 90;
+}
+
+export function validateDirectionsPayload(geometry, style) {
+  if (geometry?.type !== 'LineString' || !Array.isArray(geometry.coordinates)
+    || geometry.coordinates.length < 2 || geometry.coordinates.length > 100_000
+    || !geometry.coordinates.every(validDirectionsPosition)) {
+    throw contentError('路线必须包含有效的 LineString 道路坐标');
+  }
+  if (!style || typeof style !== 'object' || Array.isArray(style)) throw contentError('缺少路线样式和规划数据');
+  const route = style.routeData;
+  if (!route || typeof route !== 'object' || Array.isArray(route)
+    || !['driving', 'walking', 'cycling'].includes(route.mode)
+    || !Array.isArray(route.stops) || route.stops.length < 2 || route.stops.length > 10
+    || !route.stops.every((stop) => validDirectionsPosition(stop?.position))
+    || !Number.isFinite(route.distance) || route.distance < 0
+    || !Number.isFinite(route.duration) || route.duration < 0
+    || !Array.isArray(route.steps)
+    || !Number.isInteger(route.selectedAlternativeIndex) || route.selectedAlternativeIndex < 0) {
+    throw contentError('路线需要有效的出行方式、起终点、里程、时间和规划结果');
+  }
+  if (route.segmentPaths !== undefined && (!Array.isArray(route.segmentPaths)
+    || route.segmentPaths.length !== route.stops.length - 1
+    || !route.segmentPaths.every((segment) => Array.isArray(segment) && segment.length >= 1 && segment.every(validDirectionsPosition)))) {
+    throw contentError('路线分段与起终点数量不一致');
+  }
+}
+
+function migrateLegacyDirections() {
+  transaction(() => {
+    const rows = db.prepare(`SELECT f.*, l.map_id, l.visible AS source_visible FROM features f JOIN layers l ON l.id = f.layer_id
+      WHERE l.kind = 'features' AND f.type = 'LineString' ORDER BY l.map_id, l.position, l.id, f.position, f.id`).all();
+    const touchedMaps = new Set();
+    const touchedLayers = new Set();
+    const updated = iso();
+    for (const feature of rows) {
+      const geometry = parseJson(feature.geometry_json);
+      const style = parseJson(feature.style_json);
+      try { validateDirectionsPayload(geometry, style); } catch { continue; }
+      const position = Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM layers WHERE map_id = ?').get(feature.map_id).position);
+      const result = db.prepare(`INSERT INTO layers (map_id, name, kind, visible, position, style_json, created_at, updated_at)
+        VALUES (?, ?, 'directions', ?, ?, ?, ?, ?)`)
+        .run(feature.map_id, feature.name, feature.source_visible, position, JSON.stringify({ color: style.color || '#1a73e8' }), updated, updated);
+      db.prepare('UPDATE features SET layer_id = ?, position = 0, updated_at = ?, version = version + 1 WHERE id = ?')
+        .run(Number(result.lastInsertRowid), updated, feature.id);
+      touchedMaps.add(feature.map_id);
+      touchedLayers.add(feature.layer_id);
+    }
+    for (const layerId of touchedLayers) {
+      const ordered = db.prepare('SELECT id FROM features WHERE layer_id = ? ORDER BY position, id').all(layerId);
+      ordered.forEach((row, position) => db.prepare('UPDATE features SET position = ?, updated_at = ?, version = version + 1 WHERE id = ?').run(position, updated, row.id));
+      db.prepare('UPDATE layers SET updated_at = ?, version = version + 1 WHERE id = ?').run(updated, layerId);
+    }
+    for (const mapId of touchedMaps) {
+      touchMap(mapId, updated);
+      audit('migrate-directions', 'map', mapId, '将有效旧路线迁移到独立路线图层，保留要素和媒体');
+    }
+  });
+}
+
+export function saveMapDirections(mapId, body) {
+  validateDirectionsPayload(body.geometry, body.style);
+  for (const key of ['layerId', 'featureId']) {
+    if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || body[key] <= 0)) throw contentError('无效路线图层或要素 ID');
+  }
+  return transaction(() => {
+    const latest = getMap(mapId);
+    if (!latest) throw contentError('地图不存在', 404);
+    if (body.expectedFingerprint !== undefined && body.expectedFingerprint !== latest.contentFingerprint) {
+      throw contentError('地图已被更新，请基于最新内容继续编辑', 409, { conflict: true, latest, currentFingerprint: latest.contentFingerprint });
+    }
+    let layer = body.layerId ? latest.layers.find((item) => item.id === body.layerId) : null;
+    if (body.featureId && !body.layerId) layer = latest.layers.find((item) => item.features.some((feature) => feature.id === body.featureId));
+    if ((body.layerId || body.featureId) && !layer) throw contentError('目标路线必须属于当前地图');
+    if (layer && layer.kind !== 'directions') throw contentError('目标图层必须为路线图层');
+    if (layer && (layer.features.length !== 1 || (body.featureId && layer.features[0].id !== body.featureId))) {
+      throw contentError('路线要素必须属于该路线图层，且每个图层只保留一条路线');
+    }
+    const routeFeature = layer?.features[0];
+    const currentVersion = routeFeature?.version ?? latest.version;
+    if (body.expectedVersion !== undefined) {
+      if (!Number.isSafeInteger(body.expectedVersion) || body.expectedVersion <= 0) throw contentError('无效路线版本');
+      if (body.expectedVersion !== currentVersion) throw contentError('路线已被更新，请基于最新版本继续编辑', 409, { conflict: true, latest, currentVersion });
+    }
+    const updated = iso();
+    const name = String(body.name ?? routeFeature?.name ?? '路线').trim().slice(0, 180) || '路线';
+    const description = String(body.description ?? routeFeature?.description ?? '');
+    let layerId = layer?.id;
+    let featureId = routeFeature?.id;
+    const created = !layer;
+    if (created) {
+      const position = Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM layers WHERE map_id = ?').get(mapId).position);
+      const result = db.prepare(`INSERT INTO layers (map_id, name, kind, visible, position, style_json, created_at, updated_at)
+        VALUES (?, ?, 'directions', 1, ?, ?, ?, ?)`)
+        .run(mapId, name.slice(0, 120), position, JSON.stringify({ color: body.style.color || '#1a73e8' }), updated, updated);
+      layerId = Number(result.lastInsertRowid);
+      const featureResult = db.prepare(`INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at)
+        VALUES (?, 'LineString', ?, ?, ?, ?, 0, ?, ?)`)
+        .run(layerId, name, description, JSON.stringify(body.geometry), JSON.stringify(body.style), updated, updated);
+      featureId = Number(featureResult.lastInsertRowid);
+    } else {
+      db.prepare(`UPDATE features SET name = ?, description = ?, geometry_json = ?, style_json = ?, updated_at = ?, version = version + 1 WHERE id = ?`)
+        .run(name, description, JSON.stringify(body.geometry), JSON.stringify(body.style), updated, featureId);
+      const layerName = layer.name === routeFeature.name ? name.slice(0, 120) : layer.name;
+      db.prepare('UPDATE layers SET name = ?, updated_at = ?, version = version + 1 WHERE id = ?').run(layerName, updated, layerId);
+    }
+    touchMap(mapId, updated);
+    return {
+      ...getMap(mapId), savedLayerId: layerId, savedFeatureId: featureId,
+      ...(created ? { createdLayerId: layerId, createdFeatureId: featureId } : {}),
+    };
+  });
+}
+
 export function reorderMapLayers(mapId, layerIds) {
   return transaction(() => {
     const existing = db.prepare('SELECT id FROM layers WHERE map_id = ? ORDER BY position, id').all(mapId).map((row) => row.id);
@@ -920,11 +1047,13 @@ export function reorderLayerFeatures(mapId, layerId, featureIds) {
 
 export function moveMapFeature(mapId, featureId, layerId, index) {
   return transaction(() => {
-    const feature = db.prepare('SELECT f.* FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ? AND l.map_id = ?').get(featureId, mapId);
+    const feature = db.prepare('SELECT f.*, l.kind AS layer_kind FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ? AND l.map_id = ?').get(featureId, mapId);
     if (!feature) throw contentError('要素不存在', 404);
-    if (!db.prepare('SELECT id FROM layers WHERE id = ? AND map_id = ?').get(layerId, mapId)) {
+    const target = db.prepare('SELECT id, kind FROM layers WHERE id = ? AND map_id = ?').get(layerId, mapId);
+    if (!target) {
       throw contentError('目标图层必须属于当前地图');
     }
+    if (target.kind === 'directions' || feature.layer_kind === 'directions') throw contentError('路线图层不能搬入或搬出普通要素，请通过路线规划编辑');
     const targetIds = db.prepare('SELECT id FROM features WHERE layer_id = ? AND id != ? ORDER BY position, id').all(layerId, featureId).map((row) => row.id);
     if (!Number.isSafeInteger(index) || index < 0 || index > targetIds.length) throw contentError('无效要素位置');
     targetIds.splice(index, 0, featureId);
@@ -987,7 +1116,7 @@ function snapshotContent(map) {
   return {
     name: map.name, description: map.description, owner: map.owner, base_map: map.base_map,
     layers: map.layers.map((layer) => ({
-      id: layer.id, name: layer.name, visible: layer.visible, position: layer.position,
+      id: layer.id, name: layer.name, kind: layer.kind, visible: layer.visible, position: layer.position,
       style: layer.style, created_at: layer.created_at, version: layer.version,
       features: layer.features.map((feature) => ({
         id: feature.id, type: feature.type, name: feature.name, description: feature.description,
@@ -1066,12 +1195,12 @@ export function restoreContentCheckpoint(mapId, userId, token, expectedFingerpri
     const updated = iso();
     const layerIds = new Set(snapshot.layers.map((layer) => layer.id));
     const featureIds = new Set(snapshot.layers.flatMap((layer) => layer.features.map((feature) => feature.id)));
-    const upsertLayer = db.prepare(`INSERT INTO layers (id, map_id, name, visible, position, style_json, created_at, updated_at, version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET name = excluded.name, visible = excluded.visible, position = excluded.position,
+    const upsertLayer = db.prepare(`INSERT INTO layers (id, map_id, name, kind, visible, position, style_json, created_at, updated_at, version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, visible = excluded.visible, position = excluded.position,
         style_json = excluded.style_json, updated_at = excluded.updated_at, version = layers.version + 1`);
     for (const layer of snapshot.layers) {
-      upsertLayer.run(layer.id, mapId, layer.name, Number(layer.visible), layer.position, JSON.stringify(layer.style), layer.created_at, updated, layer.version + 1);
+      upsertLayer.run(layer.id, mapId, layer.name, layer.kind || 'features', Number(layer.visible), layer.position, JSON.stringify(layer.style), layer.created_at, updated, layer.version + 1);
     }
     const upsertFeature = db.prepare(`INSERT INTO features (id, layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

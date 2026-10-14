@@ -17,6 +17,8 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
+import DirectionsLayerSummary from './DirectionsLayerSummary.jsx';
+import './layer-panel.css';
 
 const DRAG_TYPE = 'application/x-open-my-map-item';
 
@@ -63,6 +65,8 @@ export default function LayerPanel({
   t,
   lang = 'zh',
   renderFeatureStyle,
+  renderDirections,
+  onEditDirections,
   hidden = false,
 }) {
   const text = (zh, en) => (lang === 'en' ? en : zh);
@@ -210,6 +214,16 @@ export default function LayerPanel({
   };
 
   const dropFeature = (item, layer, insertionIndex) => {
+    const sourceLayer = layers.find((entry) => sameId(entry.id, item.layerId));
+    if (layer.kind === 'directions' || sourceLayer?.kind === 'directions') {
+      setAnnouncement(
+        text(
+          '路线使用独立图层，不能移动普通要素进出路线图层。',
+          'Directions use their own layer. Ordinary features cannot be moved into or out of it.',
+        ),
+      );
+      return;
+    }
     if (sameId(item.layerId, layer.id)) {
       const ids = layer.features.map((feature) => feature.id);
       const next = reorder(ids, item.id, insertionIndex);
@@ -254,418 +268,491 @@ export default function LayerPanel({
       <span className="visually-hidden" role="status" aria-live="polite">
         {announcement}
       </span>
-      {layers.map((layer, layerIndex) => (
-        <section
-          key={layer.id}
-          className={`layer-section${sameId(selectedLayerId, layer.id) ? ' selected' : ''}${dragOver === `layer-${layer.id}` ? ' drag-over' : ''}`}
-          data-layer-id={layer.id}
-          onClick={() => onSelectLayer?.(layer.id)}
-          onDragOver={(event) => acceptDrag(event, `layer-${layer.id}`)}
-          onDrop={(event) => dropOnLayer(event, layer, layerIndex)}
-        >
-          <header className="layer-header enhanced-layer-header">
-            <button
-              type="button"
-              className="layer-drag-handle"
-              draggable={canEdit && Boolean(onReorderLayers)}
-              disabled={!canEdit || !onReorderLayers}
-              onDragStart={(event) => startDrag(event, { kind: 'layer', id: layer.id, name: layer.name })}
-              onDragEnd={finishDrag}
-              onKeyDown={(event) => {
-                if (event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
-                  event.preventDefault();
-                  moveLayer(layer, event.key === 'ArrowUp' ? -1 : 1);
-                }
-              }}
-              aria-label={text(
-                `拖动排序 ${layer.name}，或按 Alt 加上下方向键`,
-                `Reorder ${layer.name}: drag or press Alt with an arrow key`,
-              )}
-              title={text('拖动排序，Alt + ↑/↓', 'Drag to reorder, Alt + ↑/↓')}
-            >
-              <GripVertical size={14} />
-            </button>
-            <button
-              type="button"
-              className="icon-button layer-expand"
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleExpanded?.(layer.id);
-              }}
-              aria-expanded={Boolean(expandedLayers[layer.id])}
-              aria-controls={`layer-body-${layer.id}`}
-              aria-label={
-                expandedLayers[layer.id]
-                  ? text(`收起 ${layer.name}`, `Collapse ${layer.name}`)
-                  : text(`展开 ${layer.name}`, `Expand ${layer.name}`)
+      {layers.map((layer, layerIndex) => {
+        const directionsLayer = layer.kind === 'directions';
+        const routeFeature = directionsLayer
+          ? layer.features.find((feature) => feature.style?.routeData) || layer.features[0]
+          : null;
+        const expanded = directionsLayer
+          ? expandedLayers[layer.id] !== false
+          : Boolean(expandedLayers[layer.id]);
+        const directionEditor = directionsLayer && expanded ? renderDirections?.(layer) : null;
+        const openDirections = (event) => {
+          event?.stopPropagation();
+          if (!routeFeature) return;
+          onSelectLayer?.(layer.id);
+          if (onEditDirections) onEditDirections(layer, routeFeature);
+          else onSelectFeature?.(routeFeature, layer);
+        };
+        return (
+          <section
+            key={layer.id}
+            className={`layer-section${directionsLayer ? ' layer-kind-directions' : ''}${sameId(selectedLayerId, layer.id) ? ' selected' : ''}${dragOver === `layer-${layer.id}` ? ' drag-over' : ''}`}
+            data-layer-id={layer.id}
+            data-layer-kind={directionsLayer ? 'directions' : 'features'}
+            onClick={() => onSelectLayer?.(layer.id)}
+            onDragOver={(event) => {
+              if (directionsLayer && dragRef.current?.kind === 'feature') {
+                event.dataTransfer.dropEffect = 'none';
+                setDragOver(null);
+                return;
               }
-            >
-              {expandedLayers[layer.id] ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-            </button>
-            <input
-              type="checkbox"
-              checked={Boolean(layer.visible)}
-              disabled={!canEdit || !onToggleLayer}
-              onClick={(event) => event.stopPropagation()}
-              onChange={() => onToggleLayer?.(layer)}
-              aria-label={translate('editor.showLayer', text(`显示 ${layer.name}`, `Show ${layer.name}`), {
-                name: layer.name,
-              })}
-            />
-            <button
-              type="button"
-              className="layer-name"
-              onClick={() => onSelectLayer?.(layer.id)}
-              onDoubleClick={() => canEdit && onRenameLayer?.(layer)}
-            >
-              {layer.name}
-            </button>
-            <div className="layer-menu-anchor" data-layer-menu-root>
+              acceptDrag(event, `layer-${layer.id}`);
+            }}
+            onDrop={(event) => dropOnLayer(event, layer, layerIndex)}
+          >
+            <header className="layer-header enhanced-layer-header">
               <button
                 type="button"
-                className="icon-button"
+                className="layer-drag-handle"
+                draggable={canEdit && Boolean(onReorderLayers)}
+                disabled={!canEdit || !onReorderLayers}
+                onDragStart={(event) => startDrag(event, { kind: 'layer', id: layer.id, name: layer.name })}
+                onDragEnd={finishDrag}
+                onKeyDown={(event) => {
+                  if (event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
+                    event.preventDefault();
+                    moveLayer(layer, event.key === 'ArrowUp' ? -1 : 1);
+                  }
+                }}
+                aria-label={text(
+                  `拖动排序 ${layer.name}，或按 Alt 加上下方向键`,
+                  `Reorder ${layer.name}: drag or press Alt with an arrow key`,
+                )}
+                title={text('拖动排序，Alt + ↑/↓', 'Drag to reorder, Alt + ↑/↓')}
+              >
+                <GripVertical size={14} />
+              </button>
+              <button
+                type="button"
+                className="icon-button layer-expand"
                 onClick={(event) => {
                   event.stopPropagation();
-                  anchorMenu(event.currentTarget);
-                  setFeatureMenu(null);
-                  setLayerMenu((current) => (sameId(current, layer.id) ? null : layer.id));
+                  onToggleExpanded?.(layer.id);
                 }}
-                aria-label={text(`${layer.name} 的选项`, `Options for ${layer.name}`)}
-                aria-expanded={sameId(layerMenu, layer.id)}
-                aria-haspopup="menu"
+                aria-expanded={expanded}
+                aria-controls={`layer-body-${layer.id}`}
+                aria-label={
+                  expanded
+                    ? text(`收起 ${layer.name}`, `Collapse ${layer.name}`)
+                    : text(`展开 ${layer.name}`, `Expand ${layer.name}`)
+                }
               >
-                <MoreVertical size={18} />
+                {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
               </button>
-              {sameId(layerMenu, layer.id)
-                ? createPortal(
+              <input
+                type="checkbox"
+                checked={Boolean(layer.visible)}
+                disabled={!canEdit || !onToggleLayer}
+                onClick={(event) => event.stopPropagation()}
+                onChange={() => onToggleLayer?.(layer)}
+                aria-label={translate('editor.showLayer', text(`显示 ${layer.name}`, `Show ${layer.name}`), {
+                  name: layer.name,
+                })}
+              />
+              <button
+                type="button"
+                className="layer-name"
+                onClick={() => onSelectLayer?.(layer.id)}
+                onDoubleClick={() => canEdit && onRenameLayer?.(layer)}
+              >
+                {directionsLayer ? (
+                  <>
+                    <Route size={15} className="directions-layer-icon" />
+                    <span className="directions-layer-name">{layer.name}</span>
+                  </>
+                ) : (
+                  layer.name
+                )}
+              </button>
+              <div className="layer-menu-anchor" data-layer-menu-root>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    anchorMenu(event.currentTarget);
+                    setFeatureMenu(null);
+                    setLayerMenu((current) => (sameId(current, layer.id) ? null : layer.id));
+                  }}
+                  aria-label={text(`${layer.name} 的选项`, `Options for ${layer.name}`)}
+                  aria-expanded={sameId(layerMenu, layer.id)}
+                  aria-haspopup="menu"
+                >
+                  <MoreVertical size={18} />
+                </button>
+                {sameId(layerMenu, layer.id)
+                  ? createPortal(
+                      <div
+                        ref={menuRef}
+                        className="popup-menu layer-popup-menu layer-panel-menu"
+                        style={menuPosition}
+                        data-layer-menu-root
+                        role="menu"
+                        aria-label={text('图层操作', 'Layer actions')}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={menuKeyDown}
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={!canEdit}
+                          onClick={() => {
+                            setLayerMenu(null);
+                            onRenameLayer?.(layer);
+                          }}
+                        >
+                          <Pencil size={15} />
+                          {translate('editor.rename', text('重命名', 'Rename'))}
+                        </button>
+                        {!directionsLayer ? (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={!canEdit}
+                            onClick={() => {
+                              setLayerMenu(null);
+                              onLayerStyle?.(layer);
+                            }}
+                          >
+                            <Palette size={15} />
+                            {text('设置图层样式', 'Layer style')}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={!routeFeature || (!onEditDirections && !onSelectFeature)}
+                            onClick={(event) => {
+                              setLayerMenu(null);
+                              openDirections(event);
+                            }}
+                          >
+                            <Route size={15} />
+                            {canEdit
+                              ? text('编辑路线', 'Edit directions')
+                              : text('查看路线', 'View directions')}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={!canEdit || layerIndex === 0 || !onReorderLayers}
+                          onClick={() => moveLayer(layer, -1)}
+                        >
+                          <ArrowUp size={15} />
+                          {text('上移图层', 'Move layer up')}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={!canEdit || layerIndex === layers.length - 1 || !onReorderLayers}
+                          onClick={() => moveLayer(layer, 1)}
+                        >
+                          <ArrowDown size={15} />
+                          {text('下移图层', 'Move layer down')}
+                        </button>
+                        {!directionsLayer ? (
+                          <>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setLayerMenu(null);
+                                onTable?.(layer);
+                              }}
+                            >
+                              <Table2 size={15} />
+                              {translate('editor.openTable', text('打开数据表', 'Open data table'))}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setLayerMenu(null);
+                                onExport?.(layer);
+                              }}
+                            >
+                              <Download size={15} />
+                              {translate('editor.exportCsv', 'Export CSV')}
+                            </button>
+                          </>
+                        ) : null}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="danger"
+                          disabled={!canEdit}
+                          onClick={() => {
+                            setLayerMenu(null);
+                            onDeleteLayer?.(layer);
+                          }}
+                        >
+                          <Trash2 size={15} />
+                          {translate('editor.deleteLayer', text('删除图层', 'Delete layer'))}
+                        </button>
+                      </div>,
+                      document.body,
+                    )
+                  : null}
+              </div>
+            </header>
+            {expanded && directionsLayer ? (
+              <div
+                className={directionEditor ? 'directions-layer-editor' : 'directions-layer-body'}
+                id={`layer-body-${layer.id}`}
+              >
+                {directionEditor || (
+                  <DirectionsLayerSummary
+                    layer={layer}
+                    feature={routeFeature}
+                    canEdit={canEdit}
+                    lang={lang}
+                    onOpen={
+                      routeFeature && (onEditDirections || onSelectFeature) ? openDirections : undefined
+                    }
+                  />
+                )}
+              </div>
+            ) : expanded ? (
+              <div className="layer-body" id={`layer-body-${layer.id}`}>
+                <button
+                  type="button"
+                  className="layer-style-row"
+                  disabled={!canEdit}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onLayerStyle?.(layer);
+                  }}
+                >
+                  <Palette size={16} />
+                  {text('图层样式', 'Layer style')}
+                  <span>{layer.features.length}</span>
+                </button>
+                {layer.features.map((feature, featureIndex) => {
+                  const remoteEditor = peers.find(
+                    (peer) => peer.userId !== user?.id && sameId(peer.selectedFeatureId, feature.id),
+                  );
+                  const active = sameId(selectedFeatureId, feature.id);
+                  return (
                     <div
-                      ref={menuRef}
-                      className="popup-menu layer-popup-menu layer-panel-menu"
-                      style={menuPosition}
-                      data-layer-menu-root
-                      role="menu"
-                      aria-label={text('图层操作', 'Layer actions')}
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={menuKeyDown}
-                    >
-                      <button
-                        type="button"
-                        role="menuitem"
-                        disabled={!canEdit}
-                        onClick={() => {
-                          setLayerMenu(null);
-                          onRenameLayer?.(layer);
-                        }}
-                      >
-                        <Pencil size={15} />
-                        {translate('editor.rename', text('重命名', 'Rename'))}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        disabled={!canEdit}
-                        onClick={() => {
-                          setLayerMenu(null);
-                          onLayerStyle?.(layer);
-                        }}
-                      >
-                        <Palette size={15} />
-                        {text('设置图层样式', 'Layer style')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        disabled={!canEdit || layerIndex === 0 || !onReorderLayers}
-                        onClick={() => moveLayer(layer, -1)}
-                      >
-                        <ArrowUp size={15} />
-                        {text('上移图层', 'Move layer up')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        disabled={!canEdit || layerIndex === layers.length - 1 || !onReorderLayers}
-                        onClick={() => moveLayer(layer, 1)}
-                      >
-                        <ArrowDown size={15} />
-                        {text('下移图层', 'Move layer down')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setLayerMenu(null);
-                          onTable?.(layer);
-                        }}
-                      >
-                        <Table2 size={15} />
-                        {translate('editor.openTable', text('打开数据表', 'Open data table'))}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setLayerMenu(null);
-                          onExport?.(layer);
-                        }}
-                      >
-                        <Download size={15} />
-                        {translate('editor.exportCsv', 'Export CSV')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="danger"
-                        disabled={!canEdit}
-                        onClick={() => {
-                          setLayerMenu(null);
-                          onDeleteLayer?.(layer);
-                        }}
-                      >
-                        <Trash2 size={15} />
-                        {translate('editor.deleteLayer', text('删除图层', 'Delete layer'))}
-                      </button>
-                    </div>,
-                    document.body,
-                  )
-                : null}
-            </div>
-          </header>
-          {expandedLayers[layer.id] ? (
-            <div className="layer-body" id={`layer-body-${layer.id}`}>
-              <button
-                type="button"
-                className="layer-style-row"
-                disabled={!canEdit}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onLayerStyle?.(layer);
-                }}
-              >
-                <Palette size={16} />
-                {text('图层样式', 'Layer style')}
-                <span>{layer.features.length}</span>
-              </button>
-              {layer.features.map((feature, featureIndex) => {
-                const remoteEditor = peers.find(
-                  (peer) => peer.userId !== user?.id && sameId(peer.selectedFeatureId, feature.id),
-                );
-                const active = sameId(selectedFeatureId, feature.id);
-                return (
-                  <div
-                    key={feature.id}
-                    className={`feature-row enhanced-feature-row${active ? ' active' : ''}${remoteEditor ? ' remote-editing' : ''}${dragOver === `feature-${feature.id}` ? ' drag-over' : ''}`}
-                    data-feature-id={feature.id}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onSelectFeature?.(feature, layer);
-                    }}
-                    draggable={canEdit && Boolean(onReorderFeatures || onMoveFeature)}
-                    onDragStart={(event) =>
-                      startDrag(event, {
-                        kind: 'feature',
-                        id: feature.id,
-                        layerId: layer.id,
-                        name: feature.name,
-                      })
-                    }
-                    onDragEnd={finishDrag}
-                    onDragOver={(event) => {
-                      if (dragRef.current?.kind === 'layer') return;
-                      acceptDrag(event, `feature-${feature.id}`);
-                    }}
-                    onDrop={(event) => {
-                      const item = readDrag(event);
-                      if (item?.kind !== 'feature') return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      const bounds = event.currentTarget.getBoundingClientRect();
-                      finishDrag();
-                      if (canEdit)
-                        dropFeature(
-                          item,
-                          layer,
-                          featureIndex + (event.clientY > bounds.top + bounds.height / 2 ? 1 : 0),
-                        );
-                    }}
-                    title={
-                      remoteEditor
-                        ? text(
-                            `${remoteEditor.name} 正在查看此要素`,
-                            `${remoteEditor.name} is viewing this feature`,
-                          )
-                        : undefined
-                    }
-                  >
-                    <span className="feature-grip" aria-hidden="true">
-                      <GripVertical size={14} />
-                    </span>
-                    <span
-                      className={`feature-symbol ${feature.type.toLowerCase()}`}
-                      style={{ '--feature-color': feature.style?.color || layer.style?.color || '#1a73e8' }}
-                    >
-                      {feature.type === 'Point' ? (
-                        <MapPin size={15} />
-                      ) : feature.type === 'Polygon' ? (
-                        <Shapes size={15} />
-                      ) : (
-                        <Route size={15} />
-                      )}
-                    </span>
-                    <button
-                      type="button"
-                      className="feature-name"
+                      key={feature.id}
+                      className={`feature-row enhanced-feature-row${active ? ' active' : ''}${remoteEditor ? ' remote-editing' : ''}${dragOver === `feature-${feature.id}` ? ' drag-over' : ''}`}
+                      data-feature-id={feature.id}
                       onClick={(event) => {
                         event.stopPropagation();
                         onSelectFeature?.(feature, layer);
                       }}
-                      onDoubleClick={() => canEdit && onEditFeature?.(feature, layer)}
-                      aria-pressed={active}
-                    >
-                      {feature.name}
-                    </button>
-                    <button
-                      type="button"
-                      className="mini-style-button"
-                      disabled={!canEdit}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onFeatureStyle?.(feature, layer);
+                      draggable={canEdit && Boolean(onReorderFeatures || onMoveFeature)}
+                      onDragStart={(event) =>
+                        startDrag(event, {
+                          kind: 'feature',
+                          id: feature.id,
+                          layerId: layer.id,
+                          name: feature.name,
+                        })
+                      }
+                      onDragEnd={finishDrag}
+                      onDragOver={(event) => {
+                        if (dragRef.current?.kind === 'layer') return;
+                        acceptDrag(event, `feature-${feature.id}`);
                       }}
-                      aria-label={text(`设置 ${feature.name} 样式`, `Style ${feature.name}`)}
+                      onDrop={(event) => {
+                        const item = readDrag(event);
+                        if (item?.kind !== 'feature') return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        finishDrag();
+                        if (canEdit)
+                          dropFeature(
+                            item,
+                            layer,
+                            featureIndex + (event.clientY > bounds.top + bounds.height / 2 ? 1 : 0),
+                          );
+                      }}
+                      title={
+                        remoteEditor
+                          ? text(
+                              `${remoteEditor.name} 正在查看此要素`,
+                              `${remoteEditor.name} is viewing this feature`,
+                            )
+                          : undefined
+                      }
                     >
-                      <Palette size={14} />
-                    </button>
-                    <div className="feature-order-anchor" data-feature-order-root>
+                      <span className="feature-grip" aria-hidden="true">
+                        <GripVertical size={14} />
+                      </span>
+                      <span
+                        className={`feature-symbol ${feature.type.toLowerCase()}`}
+                        style={{ '--feature-color': feature.style?.color || layer.style?.color || '#1a73e8' }}
+                      >
+                        {feature.type === 'Point' ? (
+                          <MapPin size={15} />
+                        ) : feature.type === 'Polygon' ? (
+                          <Shapes size={15} />
+                        ) : (
+                          <Route size={15} />
+                        )}
+                      </span>
                       <button
                         type="button"
-                        className="feature-order-button"
+                        className="feature-name"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSelectFeature?.(feature, layer);
+                        }}
+                        onDoubleClick={() => canEdit && onEditFeature?.(feature, layer)}
+                        aria-pressed={active}
+                      >
+                        {feature.name}
+                      </button>
+                      <button
+                        type="button"
+                        className="mini-style-button"
                         disabled={!canEdit}
                         onClick={(event) => {
                           event.stopPropagation();
-                          anchorMenu(event.currentTarget);
-                          setLayerMenu(null);
-                          setFeatureMenu((current) => (sameId(current, feature.id) ? null : feature.id));
+                          onFeatureStyle?.(feature, layer);
                         }}
-                        aria-label={text(`移动 ${feature.name}`, `Move ${feature.name}`)}
-                        aria-expanded={sameId(featureMenu, feature.id)}
-                        aria-haspopup="menu"
+                        aria-label={text(`设置 ${feature.name} 样式`, `Style ${feature.name}`)}
                       >
-                        <MoreVertical size={14} />
+                        <Palette size={14} />
                       </button>
-                      {sameId(featureMenu, feature.id)
-                        ? createPortal(
-                            <div
-                              ref={menuRef}
-                              className="popup-menu feature-order-menu layer-panel-menu"
-                              style={menuPosition}
-                              data-feature-order-root
-                              role="menu"
-                              aria-label={text('要素移动操作', 'Move feature actions')}
-                              onClick={(event) => event.stopPropagation()}
-                              onKeyDown={menuKeyDown}
-                            >
-                              <button
-                                type="button"
-                                role="menuitem"
-                                disabled={featureIndex === 0 || !onReorderFeatures}
-                                onClick={() => moveFeature(feature, layer, -1)}
+                      <div className="feature-order-anchor" data-feature-order-root>
+                        <button
+                          type="button"
+                          className="feature-order-button"
+                          disabled={!canEdit}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            anchorMenu(event.currentTarget);
+                            setLayerMenu(null);
+                            setFeatureMenu((current) => (sameId(current, feature.id) ? null : feature.id));
+                          }}
+                          aria-label={text(`移动 ${feature.name}`, `Move ${feature.name}`)}
+                          aria-expanded={sameId(featureMenu, feature.id)}
+                          aria-haspopup="menu"
+                        >
+                          <MoreVertical size={14} />
+                        </button>
+                        {sameId(featureMenu, feature.id)
+                          ? createPortal(
+                              <div
+                                ref={menuRef}
+                                className="popup-menu feature-order-menu layer-panel-menu"
+                                style={menuPosition}
+                                data-feature-order-root
+                                role="menu"
+                                aria-label={text('要素移动操作', 'Move feature actions')}
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={menuKeyDown}
                               >
-                                <ArrowUp size={15} />
-                                {text('上移要素', 'Move feature up')}
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                disabled={featureIndex === layer.features.length - 1 || !onReorderFeatures}
-                                onClick={() => moveFeature(feature, layer, 1)}
-                              >
-                                <ArrowDown size={15} />
-                                {text('下移要素', 'Move feature down')}
-                              </button>
-                              {layers
-                                .filter((item) => !sameId(item.id, layer.id))
-                                .map((target) => (
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    key={target.id}
-                                    disabled={!onMoveFeature}
-                                    onClick={() =>
-                                      persist(
-                                        onMoveFeature,
-                                        [feature.id, target.id, target.features.length],
-                                        text(`要素已移到 ${target.name}`, `Feature moved to ${target.name}`),
-                                      )
-                                    }
-                                  >
-                                    <Route size={15} />
-                                    <span>
-                                      {text('移至', 'Move to')} {target.name}
-                                    </span>
-                                  </button>
-                                ))}
-                            </div>,
-                            document.body,
-                          )
-                        : null}
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={featureIndex === 0 || !onReorderFeatures}
+                                  onClick={() => moveFeature(feature, layer, -1)}
+                                >
+                                  <ArrowUp size={15} />
+                                  {text('上移要素', 'Move feature up')}
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={featureIndex === layer.features.length - 1 || !onReorderFeatures}
+                                  onClick={() => moveFeature(feature, layer, 1)}
+                                >
+                                  <ArrowDown size={15} />
+                                  {text('下移要素', 'Move feature down')}
+                                </button>
+                                {layers
+                                  .filter((item) => item.kind !== 'directions' && !sameId(item.id, layer.id))
+                                  .map((target) => (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      key={target.id}
+                                      disabled={!onMoveFeature}
+                                      onClick={() =>
+                                        persist(
+                                          onMoveFeature,
+                                          [feature.id, target.id, target.features.length],
+                                          text(
+                                            `要素已移到 ${target.name}`,
+                                            `Feature moved to ${target.name}`,
+                                          ),
+                                        )
+                                      }
+                                    >
+                                      <Route size={15} />
+                                      <span>
+                                        {text('移至', 'Move to')} {target.name}
+                                      </span>
+                                    </button>
+                                  ))}
+                              </div>,
+                              document.body,
+                            )
+                          : null}
+                      </div>
+                      {renderFeatureStyle?.(feature, layer)}
                     </div>
-                    {renderFeatureStyle?.(feature, layer)}
+                  );
+                })}
+                {!layer.features.length ? (
+                  <div className="empty-layer-tip">
+                    <p>
+                      {translate(
+                        'editor.emptyLayerTip',
+                        text(
+                          '在地图上添加地点，或把其他图层的要素拖到这里。',
+                          'Add a place, or drop a feature here.',
+                        ),
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onImport?.(layer);
+                      }}
+                    >
+                      <Upload size={14} />
+                      {translate('editor.import', text('导入', 'Import'))}
+                    </button>
                   </div>
-                );
-              })}
-              {!layer.features.length ? (
-                <div className="empty-layer-tip">
-                  <p>
-                    {translate(
-                      'editor.emptyLayerTip',
-                      text(
-                        '在地图上添加地点，或把其他图层的要素拖到这里。',
-                        'Add a place, or drop a feature here.',
-                      ),
-                    )}
-                  </p>
-                  <button
-                    type="button"
-                    disabled={!canEdit}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onImport?.(layer);
-                    }}
-                  >
-                    <Upload size={14} />
-                    {translate('editor.import', text('导入', 'Import'))}
-                  </button>
-                </div>
-              ) : (
-                <div className="layer-footer-actions">
-                  <button
-                    type="button"
-                    disabled={!canEdit}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onImport?.(layer);
-                    }}
-                  >
-                    <Upload size={14} />
-                    {translate('editor.import', text('导入', 'Import'))}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onTable?.(layer);
-                    }}
-                  >
-                    <Table2 size={14} />
-                    {translate('editor.dataTable', text('数据表', 'Data table'))}
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : null}
-        </section>
-      ))}
+                ) : (
+                  <div className="layer-footer-actions">
+                    <button
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onImport?.(layer);
+                      }}
+                    >
+                      <Upload size={14} />
+                      {translate('editor.import', text('导入', 'Import'))}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onTable?.(layer);
+                      }}
+                    >
+                      <Table2 size={14} />
+                      {translate('editor.dataTable', text('数据表', 'Data table'))}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </section>
+        );
+      })}
     </div>
   );
 }

@@ -14,6 +14,7 @@ import {
   hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, setMapFavorite,
   reorderMapLayers, reorderLayerFeatures, moveMapFeature, updateMapLayerStyle,
   createContentCheckpoint, restoreContentCheckpoint,
+  saveMapDirections, validateDirectionsPayload,
 } from './db.js';
 import {
   loadSession, loginWithEmail, logoutSession, registerUser, updateProfile, changePassword,
@@ -135,7 +136,7 @@ app.use((req, res, next) => {
   let mapId;
   let decodedPath;
   try { decodedPath = decodeURIComponent(req.path); } catch { return next(); }
-  const mapMatch = /^\/api\/maps\/([^/]+)(?:\/(?:layers|reorder|features\/reorder))?\/?$/.exec(decodedPath);
+  const mapMatch = /^\/api\/maps\/([^/]+)(?:\/(?:layers|reorder|directions|features\/reorder))?\/?$/.exec(decodedPath);
   const layerMatch = /^\/api\/layers\/([^/]+)(?:\/(?:style|features(?:\/bulk)?))?\/?$/.exec(decodedPath);
   const featureMatch = /^\/api\/features\/([^/]+)(?:\/move)?\/?$/.exec(decodedPath);
   if (mapMatch) mapId = id(mapMatch[1]);
@@ -518,10 +519,20 @@ app.post('/api/maps/:mapId/features/reorder', (req, res) => {
   res.json(map);
 });
 
+app.post('/api/maps/:mapId/directions', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  const map = saveMapDirections(mapId, req.body || {});
+  audit(map.createdFeatureId ? 'create-directions' : 'update-directions', 'layer', map.savedLayerId, '原子保存独立路线图层');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.status(map.createdFeatureId ? 201 : 200).json(map);
+});
+
 app.post('/api/maps/:mapId/layers', (req, res) => {
   const mapId = id(req.params.mapId);
   if (!db.prepare('SELECT 1 FROM maps WHERE id = ?').get(mapId)) return notFound(res, '地图不存在');
   if (!assertEditor(req, res, mapId)) return;
+  if (req.body.kind !== undefined && req.body.kind !== 'features') return res.status(400).json({ error: '请通过路线保存接口创建路线图层' });
   const created = now();
   const position = Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM layers WHERE map_id = ?').get(mapId).position);
   const name = String(req.body.name || '无标题图层').trim().slice(0, 120) || '无标题图层';
@@ -542,6 +553,7 @@ app.patch('/api/layers/:layerId', (req, res) => {
   const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
   if (!layer) return notFound(res, '图层不存在');
   if (!assertEditor(req, res, layer.map_id)) return;
+  if (req.body.kind !== undefined && req.body.kind !== layer.kind) return res.status(400).json({ error: '不能更改图层类型' });
   const latestMap = getMap(layer.map_id);
   if (!assertVersionMatch(req, res, layer.version, findLayerInMap(latestMap, layerId))) return;
   const fields = [];
@@ -622,6 +634,7 @@ app.post('/api/layers/:layerId/features', (req, res) => {
   const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
   if (!layer) return notFound(res, '图层不存在');
   if (!assertEditor(req, res, layer.map_id)) return;
+  if (layer.kind === 'directions') return res.status(400).json({ error: '路线图层只接受路线规划结果，不能添加普通要素' });
   const featureId = createFeature(layerId, req.body);
   db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
   audit('create', 'feature', featureId, `添加到图层 ${layerId}`);
@@ -636,6 +649,7 @@ app.post('/api/layers/:layerId/features/bulk', (req, res) => {
   const layer = db.prepare('SELECT * FROM layers WHERE id = ?').get(layerId);
   if (!layer) return notFound(res, '图层不存在');
   if (!assertEditor(req, res, layer.map_id)) return;
+  if (layer.kind === 'directions') return res.status(400).json({ error: '路线图层不支持导入普通要素' });
   const features = Array.isArray(req.body.features) ? req.body.features.slice(0, 2000) : [];
   db.exec('BEGIN');
   try {
@@ -659,12 +673,15 @@ app.post('/api/layers/:layerId/features/bulk', (req, res) => {
 app.patch('/api/features/:featureId', (req, res) => {
   const featureId = id(req.params.featureId);
   const feature = db.prepare(`
-    SELECT f.*, l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
+    SELECT f.*, l.map_id, l.kind AS layer_kind FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
   `).get(featureId);
   if (!feature) return notFound(res, '要素不存在');
   if (!assertEditor(req, res, feature.map_id)) return;
   const latestMap = getMap(feature.map_id);
   if (!assertVersionMatch(req, res, feature.version, findFeatureInMap(latestMap, featureId))) return;
+  if (feature.layer_kind === 'directions') {
+    validateDirectionsPayload(req.body.geometry ?? JSON.parse(feature.geometry_json), req.body.style ?? JSON.parse(feature.style_json));
+  }
   const fields = [];
   const values = [];
   for (const key of ['name', 'description']) {
@@ -683,8 +700,11 @@ app.patch('/api/features/:featureId', (req, res) => {
   }
   if (Object.hasOwn(req.body, 'layerId')) {
     const targetLayerId = id(req.body.layerId);
-    const target = db.prepare('SELECT id FROM layers WHERE id = ? AND map_id = ?').get(targetLayerId, feature.map_id);
+    const target = db.prepare('SELECT id, kind FROM layers WHERE id = ? AND map_id = ?').get(targetLayerId, feature.map_id);
     if (!target) return res.status(400).json({ error: '目标图层必须属于当前地图' });
+    if (targetLayerId !== feature.layer_id && (target.kind === 'directions' || feature.layer_kind === 'directions')) {
+      return res.status(400).json({ error: '路线图层不能搬入或搬出普通要素，请通过路线规划编辑' });
+    }
     fields.push('layer_id = ?');
     values.push(targetLayerId);
     if (targetLayerId !== feature.layer_id) {
@@ -829,16 +849,33 @@ app.delete('/api/attachments/:attachmentId', (req, res) => {
 app.delete('/api/features/:featureId', (req, res) => {
   const featureId = id(req.params.featureId);
   const feature = db.prepare(`
-    SELECT f.*, l.map_id FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
+    SELECT f.*, l.map_id, l.kind AS layer_kind FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ?
   `).get(featureId);
   if (!feature) return notFound(res, '要素不存在');
   if (!assertEditor(req, res, feature.map_id)) return;
   const attachments = db.prepare('SELECT stored_name FROM attachments WHERE feature_id = ?').all(featureId);
-  db.prepare('DELETE FROM features WHERE id = ?').run(featureId);
+  if (feature.layer_kind === 'directions') {
+    const layerCount = Number(db.prepare('SELECT COUNT(*) AS count FROM layers WHERE map_id = ?').get(feature.map_id).count);
+    if (layerCount <= 1) return res.status(409).json({ error: '每张地图至少保留一个图层' });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare('DELETE FROM layers WHERE id = ?').run(feature.layer_id);
+      db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } else {
+    db.prepare('DELETE FROM features WHERE id = ?').run(featureId);
+    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
+  }
   deleteStoredFiles(attachments);
-  db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
   audit('delete', 'feature', featureId, `删除“${feature.name}”`);
-  emitMapOp(feature.map_id, 'feature.deleted', req.user, { entityId: featureId });
+  if (feature.layer_kind === 'directions') {
+    const map = getMap(feature.map_id);
+    emitMapOp(feature.map_id, 'map.updated', req.user, { entity: map, version: map.version });
+  } else emitMapOp(feature.map_id, 'feature.deleted', req.user, { entityId: featureId });
   if (req.body?.expectedFingerprint !== undefined) return res.json(getMap(feature.map_id));
   res.status(204).end();
 });

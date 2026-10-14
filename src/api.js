@@ -104,6 +104,7 @@ export const api = {
   reorderFeatures: (mapId, body) => request(`/api/maps/${mapId}/features/reorder`, { method: 'POST', body: JSON.stringify(body) }),
   deleteMap: (mapId) => request(`/api/maps/${mapId}`, { method: 'DELETE' }),
   addLayer: (mapId, body) => request(`/api/maps/${mapId}/layers`, { method: 'POST', body: JSON.stringify(body) }),
+  saveDirections: (mapId, body) => request(`/api/maps/${mapId}/directions`, { method: 'POST', body: JSON.stringify(body) }),
   updateLayer: (layerId, body) => request(`/api/layers/${layerId}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteLayer: (layerId, body = {}) => request(`/api/layers/${layerId}`, { method: 'DELETE', body: JSON.stringify(body) }),
   updateLayerStyle: (layerId, body) => request(`/api/layers/${layerId}/style`, { method: 'PATCH', body: JSON.stringify(body) }),

@@ -9,7 +9,7 @@ function mobileViewport() {
 
 function stateHeights() {
   const viewport = window.visualViewport?.height || window.innerHeight;
-  return [47, Math.max(160, viewport * 0.52), Math.max(160, viewport - 74)];
+  return [47, Math.max(160, viewport * 0.52), Math.max(160, viewport - 112)];
 }
 
 export default function MobileSheet({

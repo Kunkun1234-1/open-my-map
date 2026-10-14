@@ -405,6 +405,7 @@ export default function AmapMap({
   onCandidateClick,
   onContextMenu,
   onPoiSelect,
+  poiEnabled = true,
   onViewChange,
   onMeasurementChange,
   onRouteSelect,
@@ -468,6 +469,7 @@ export default function AmapMap({
     onCandidateClick,
     onContextMenu,
     onPoiSelect,
+    poiEnabled,
     onViewChange,
     onMeasurementChange,
     onRouteSelect,
@@ -630,6 +632,9 @@ export default function AmapMap({
         callbacksRef.current.onMapClick?.(storagePoint(event.lnglat), event.originEvent || event.originalEvent);
       });
       map.on('hotspotclick', (event) => {
+        // The same native click can also place a drawing point. Do not let
+        // its POI event suppress that click or replace an active editing flow.
+        if (!callbacksRef.current.poiEnabled) return;
         const poi = event?.poi || event?.hotspot || event;
         const position = poi?.lnglat || poi?.location || event?.lnglat;
         if (!position) return;
@@ -1046,7 +1051,7 @@ export default function AmapMap({
     // Planning a preview changes only temporary directions state. Read-only
     // map visitors may drag it; editing saved route features still needs access.
     if (routePlan?.geometry) addHandles(routePlan);
-    if (editable && activeTool === 'pan' && savedRoute) addHandles({ geometry: savedRoute.feature.geometry, ...savedRoute.feature.style.routeData }, savedRoute);
+    if (!routePlan?.geometry && editable && activeTool === 'pan' && savedRoute) addHandles({ geometry: savedRoute.feature.geometry, ...savedRoute.feature.style.routeData }, savedRoute);
     if (overlays.length) map.add(overlays);
     routeOverlaysRef.current = overlays;
     return () => {

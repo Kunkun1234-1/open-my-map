@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAMapPlace, searchAMapPlaces, suggestAMapPlaces } from '../../amap.js';
 import {
   MAX_ROUTE_STOPS, ROUTE_MODES, formatRouteDistance, formatRouteDuration,
   parseRouteCoordinate, routeAMapAlternatives, routeDataForSave, validRoutePosition,
 } from '../../routing.js';
+import { directionsSnapshotSignature, restoreSavedDirections } from './directionsData.js';
 
 let nextStopId = 0;
 const coordinateLabel = (position) => position.map((coordinate) => Number(coordinate).toFixed(6)).join(', ');
@@ -48,6 +49,8 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
   const [suggestions, setSuggestions] = useState([]);
   const [resolving, setResolving] = useState(false);
   const [planRevision, setPlanRevision] = useState(0);
+  const [target, setTarget] = useState({ layerId: null, featureId: null, featureVersion: null });
+  const [savedBaseline, setSavedBaseline] = useState('');
   const callbacksRef = useRef({ onPreviewChange, onSave, onError, onFocus });
   const stopsRef = useRef(stops);
   const visibleRef = useRef(visible);
@@ -59,13 +62,19 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
   const abortRef = useRef(null);
   const viewRevisionRef = useRef(0);
   const savingRef = useRef(false);
+  const targetRef = useRef(target);
+  const sessionRef = useRef(0);
+  const loadedPlanRef = useRef(null);
   const selectedAlternative = alternatives.find((route) => route.id === selectedAlternativeId) || null;
   const activeStop = stops.find((stop) => stop.id === activeStopId);
+  const snapshotSignature = useMemo(() => directionsSnapshotSignature(mode, stops, selectedAlternative), [mode, stops, selectedAlternative]);
+  const isSaved = Boolean(target.featureId && savedBaseline && snapshotSignature === savedBaseline);
 
   useEffect(() => { callbacksRef.current = { onPreviewChange, onSave, onError, onFocus }; }, [onPreviewChange, onSave, onError, onFocus]);
   useEffect(() => { stopsRef.current = stops; visibleRef.current = visible; modeRef.current = mode; }, [stops, visible, mode]);
 
   const cancelPlan = useCallback(() => {
+    loadedPlanRef.current = null;
     viewRevisionRef.current += 1;
     routeRequestRef.current += 1;
     abortRef.current?.abort();
@@ -83,10 +92,20 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
     setStops(next);
   }, [cancelPlan]);
 
-  const openFrom = useCallback(({ from, to, via, mode: nextMode } = {}) => {
-    const current = visibleRef.current ? stopsRef.current : [makeStop(), makeStop()];
+  const openFrom = useCallback((settings = {}) => {
+    const { from, to, via, mode: nextMode } = settings;
+    const savedFeature = settings.savedFeature || settings.feature;
+    const routeData = settings.routeData || savedFeature?.style?.routeData;
+    let restored;
+    if (routeData) {
+      try { restored = restoreSavedDirections(routeData, savedFeature); }
+      catch (restoreError) { callbacksRef.current.onError?.(restoreError.message); return; }
+    }
+    const fresh = settings.newLayer || !visibleRef.current;
+    const current = fresh ? [makeStop(), makeStop()] : stopsRef.current;
     let next;
-    if (via !== undefined) next = [makeStop(from), ...via.map(makeStop), makeStop(to)];
+    if (restored) next = restored.stops.map(makeStop);
+    else if (via !== undefined) next = [makeStop(from), ...via.map(makeStop), makeStop(to)];
     else {
       next = [...current];
       if (from !== undefined) next[0] = makeStop(from);
@@ -97,17 +116,36 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
       return;
     }
     replaceStops(next);
+    if (restored || fresh) sessionRef.current += 1;
+    const nextTarget = restored ? {
+      layerId: settings.layerId ?? settings.target?.layerId ?? savedFeature?.layerId ?? savedFeature?.layer_id ?? null,
+      featureId: settings.featureId ?? settings.target?.featureId ?? savedFeature?.id ?? null,
+      featureVersion: settings.featureVersion ?? settings.target?.featureVersion ?? savedFeature?.version ?? null,
+    } : fresh ? { layerId: null, featureId: null, featureVersion: null } : targetRef.current;
+    targetRef.current = nextTarget;
+    setTarget(nextTarget);
+    if (restored || fresh) setSavedBaseline('');
     addressRequestRef.current += 1;
     geolocationRequestRef.current += 1;
     setSuggestions([]);
     setActiveStopId(null);
     setPickingStopId(next.find((stop) => !stop.position)?.id || null);
-    if (ROUTE_MODES.includes(nextMode)) setModeState(nextMode);
+    const effectiveMode = ROUTE_MODES.includes(nextMode) ? nextMode : restored?.mode || modeRef.current;
+    modeRef.current = effectiveMode;
+    setModeState(effectiveMode);
+    if (restored?.route && restored.mode === effectiveMode) {
+      loadedPlanRef.current = { stops: next, mode: effectiveMode };
+      setAlternatives([restored.route]);
+      setSelectedAlternativeId(restored.route.id);
+      setSavedBaseline(directionsSnapshotSignature(effectiveMode, next, restored.route));
+      callbacksRef.current.onFocus?.(restored.route.geometry.coordinates);
+    }
     visibleRef.current = true;
     setVisible(true);
   }, [replaceStops]);
 
   const close = useCallback(() => {
+    sessionRef.current += 1;
     visibleRef.current = false;
     setVisible(false);
     cancelPlan();
@@ -122,6 +160,7 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
 
   useEffect(() => {
     if (!visible || stops.some((stop) => !validRoutePosition(stop.position))) return undefined;
+    if (loadedPlanRef.current?.stops === stops && loadedPlanRef.current.mode === mode) return undefined;
     const requestId = ++routeRequestRef.current;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -163,6 +202,7 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
   }, [visible, activeStop]);
 
   useEffect(() => () => {
+    sessionRef.current += 1;
     viewRevisionRef.current += 1;
     abortRef.current?.abort();
     addressRequestRef.current += 1;
@@ -307,26 +347,39 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
     setSelectedAlternativeId(id);
   }, [selectedAlternativeId, alternatives]);
 
-  const save = useCallback(async () => {
+  const save = useCallback(async ({ keepOpen = false } = {}) => {
     if (!selectedAlternative || loading || savingRef.current || !callbacksRef.current.onSave) return;
     // The committed route is a snapshot. Editing or reopening directions while
     // this write is pending must not let its completion dismiss the new plan.
     const viewRevision = viewRevisionRef.current;
+    const session = sessionRef.current;
+    const savedTarget = { ...targetRef.current };
+    const signature = snapshotSignature;
     savingRef.current = true;
     setSaving(true);
     setError('');
     const label = mode === 'walking' ? (lang === 'en' ? 'Walking route' : '步行路线') : mode === 'cycling' ? (lang === 'en' ? 'Cycling route' : '骑行路线') : (lang === 'en' ? 'Driving route' : '驾车路线');
     try {
-      await callbacksRef.current.onSave({
+      const saved = await callbacksRef.current.onSave({
         name: stops[0].text && stops[stops.length - 1].text ? `${stops[0].text} → ${stops[stops.length - 1].text}` : label,
         description: `${label} · ${formatRouteDistance(selectedAlternative.distance, lang)} · ${formatRouteDuration(selectedAlternative.duration, lang)}`,
         geometry: selectedAlternative.geometry,
-        style: { color: '#1a73e8', weight: 6, routeData: routeDataForSave(selectedAlternative, stops, alternatives.findIndex((route) => route.id === selectedAlternative.id)) },
-      });
-      if (viewRevision === viewRevisionRef.current) close();
+        style: { color: '#1a73e8', weight: 6, routeData: routeDataForSave(selectedAlternative, stops, selectedAlternative.sourceAlternativeIndex ?? alternatives.findIndex((route) => route.id === selectedAlternative.id)) },
+      }, { target: savedTarget, isExisting: Boolean(savedTarget.layerId || savedTarget.featureId), keepOpen });
+      if (session === sessionRef.current) {
+        const nextTarget = {
+          layerId: saved?.layerId ?? saved?.savedLayerId ?? savedTarget.layerId,
+          featureId: saved?.featureId ?? saved?.savedFeatureId ?? savedTarget.featureId,
+          featureVersion: saved?.featureVersion ?? savedTarget.featureVersion,
+        };
+        targetRef.current = nextTarget;
+        setTarget(nextTarget);
+        setSavedBaseline(signature);
+      }
+      if (!keepOpen && viewRevision === viewRevisionRef.current) close();
     } catch (saveError) { if (viewRevision === viewRevisionRef.current) setError(saveError.message); }
     finally { savingRef.current = false; setSaving(false); }
-  }, [selectedAlternative, loading, saving, mode, lang, stops, alternatives, close]);
+  }, [selectedAlternative, loading, mode, lang, stops, alternatives, snapshotSignature, close]);
 
   const replanSavedFeature = useCallback(async (feature, payload) => {
     const routeData = feature.style?.routeData;
@@ -351,7 +404,8 @@ export default function useDirections({ onPreviewChange, onSave, onError, onFocu
   }, [lang]);
 
   return {
-    visible, openFrom, close, stops, mode, alternatives, selectedAlternativeId, selectedAlternative,
+    visible, openFrom, close, stops, mode, alternatives, selectedAlternativeId, selectedAlternative, target, isSaved,
+    hasUnsavedChanges: Boolean(stops.some((stop) => stop.text || stop.position) && !isSaved),
     loading, saving, locating, resolving, error, activeStopId, pickingStopId, suggestions,
     canRetry: Boolean(visible && error && !alternatives.length && stops.every((stop) => validRoutePosition(stop.position))), retry,
     setMode, updateStopText, resolveStop, chooseStop, addStop, removeStop, reorderStop, swapStops,
