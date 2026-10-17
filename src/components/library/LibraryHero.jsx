@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Folder, Plus, Settings2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Folder, Plus } from 'lucide-react';
 import useProtectedImage from '../../useProtectedImage.js';
 import { getHeroTitle } from './heroContent.js';
 import './asset-feedback.css';
@@ -12,7 +12,6 @@ export default function LibraryHero({
   user,
   backgroundUrlOverride,
   titlesOverride,
-  onSettings,
 }) {
   const savedBackground = useProtectedImage(backgroundUrlOverride === undefined ? user?.homeBackgroundUrl : '');
   const background = backgroundUrlOverride ?? savedBackground.url;
@@ -38,7 +37,6 @@ export default function LibraryHero({
         </div>
         ) : null}
       </div>
-      {onSettings ? <button type="button" className="dashboard-hero-settings" onClick={onSettings} aria-label={t('profile.homeAppearance')} title={t('profile.homeAppearance')}><Settings2 size={16} /></button> : null}
       {backgroundUrlOverride === undefined && savedBackground.error ? (
         <div className="dashboard-asset-feedback dashboard-asset-feedback--hero" role="alert">
           <span>{t('dashboard.assetLoadFailed')}</span>
