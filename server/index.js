@@ -15,6 +15,7 @@ import {
   reorderMapLayers, reorderLayerFeatures, moveMapFeature, updateMapLayerStyle,
   createContentCheckpoint, restoreContentCheckpoint,
   saveMapDirections, validateDirectionsPayload,
+  validateCustomColumns, validateFeatureProperties, reconcileFeatureCustomData,
 } from './db.js';
 import {
   loadSession, loginWithEmail, logoutSession, registerUser, updateProfile, changePassword,
@@ -558,6 +559,7 @@ app.patch('/api/layers/:layerId', (req, res) => {
   if (!assertVersionMatch(req, res, layer.version, findLayerInMap(latestMap, layerId))) return;
   const fields = [];
   const values = [];
+  let customColumns;
   const keyMap = { name: 'name', visible: 'visible', position: 'position' };
   for (const [input, column] of Object.entries(keyMap)) {
     if (Object.hasOwn(req.body, input)) {
@@ -569,11 +571,33 @@ app.patch('/api/layers/:layerId', (req, res) => {
     fields.push('style_json = ?');
     values.push(JSON.stringify(req.body.style || {}));
   }
+  if (Object.hasOwn(req.body, 'columns')) {
+    customColumns = validateCustomColumns(req.body.columns);
+    fields.push('columns_json = ?');
+    values.push(JSON.stringify(customColumns));
+  }
   if (fields.length) {
-    fields.push('version = version + 1', 'updated_at = ?');
-    values.push(now(), layerId);
-    db.prepare(`UPDATE layers SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), layer.map_id);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const updatedAt = now();
+      fields.push('version = version + 1', 'updated_at = ?');
+      values.push(updatedAt, layerId);
+      db.prepare(`UPDATE layers SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+      if (customColumns) {
+        const allowed = new Set(customColumns.map((column) => column.id));
+        const updateProperties = db.prepare('UPDATE features SET properties_json = ?, version = version + 1, updated_at = ? WHERE id = ?');
+        for (const feature of db.prepare('SELECT id, properties_json FROM features WHERE layer_id = ?').all(layerId)) {
+          const current = JSON.parse(feature.properties_json || '{}');
+          const next = Object.fromEntries(Object.entries(current).filter(([key]) => allowed.has(key)));
+          if (JSON.stringify(next) !== JSON.stringify(current)) updateProperties.run(JSON.stringify(next), updatedAt, feature.id);
+        }
+      }
+      db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(updatedAt, layer.map_id);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
     audit('update', 'layer', layerId, `更新图层字段 ${fields.slice(0, -2).join(', ')}`);
   }
   const map = getMap(layer.map_id);
@@ -622,10 +646,13 @@ function createFeature(layerId, payload) {
   const type = geometry.type || payload.type;
   if (!['Point', 'LineString', 'Polygon'].includes(type)) throw new Error('不支持的几何类型');
   const position = Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM features WHERE layer_id = ?').get(layerId).position);
+  const layer = db.prepare('SELECT columns_json FROM layers WHERE id = ?').get(layerId);
+  if (!layer) throw httpError('图层不存在', 404);
+  const properties = validateFeatureProperties(payload.properties ?? {}, JSON.parse(layer.columns_json || '[]'));
   const result = db.prepare(`
-    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at, version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-  `).run(layerId, type, String(payload.name || '无标题要素').slice(0, 180), String(payload.description || ''), JSON.stringify(geometry), JSON.stringify(payload.style || {}), position, created, created);
+    INSERT INTO features (layer_id, type, name, description, geometry_json, style_json, properties_json, position, created_at, updated_at, version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(layerId, type, String(payload.name || '无标题要素').slice(0, 180), String(payload.description || ''), JSON.stringify(geometry), JSON.stringify(payload.style || {}), JSON.stringify(properties), position, created, created);
   return Number(result.lastInsertRowid);
 }
 
@@ -684,6 +711,12 @@ app.patch('/api/features/:featureId', (req, res) => {
   }
   const fields = [];
   const values = [];
+  const sourceColumns = JSON.parse(db.prepare('SELECT columns_json FROM layers WHERE id = ?').get(feature.layer_id).columns_json || '[]');
+  let nextProperties = JSON.parse(feature.properties_json || '{}');
+  if (Object.hasOwn(req.body, 'properties')) {
+    const patch = validateFeatureProperties(req.body.properties, sourceColumns, { partial: true });
+    nextProperties = { ...nextProperties, ...patch };
+  }
   for (const key of ['name', 'description']) {
     if (Object.hasOwn(req.body, key)) {
       fields.push(`${key} = ?`);
@@ -698,6 +731,7 @@ app.patch('/api/features/:featureId', (req, res) => {
     fields.push('style_json = ?');
     values.push(JSON.stringify(req.body.style || {}));
   }
+  let movedToLayerId = feature.layer_id;
   if (Object.hasOwn(req.body, 'layerId')) {
     const targetLayerId = id(req.body.layerId);
     const target = db.prepare('SELECT id, kind FROM layers WHERE id = ? AND map_id = ?').get(targetLayerId, feature.map_id);
@@ -707,21 +741,54 @@ app.patch('/api/features/:featureId', (req, res) => {
     }
     fields.push('layer_id = ?');
     values.push(targetLayerId);
+    movedToLayerId = targetLayerId;
     if (targetLayerId !== feature.layer_id) {
       fields.push('position = ?');
       values.push(Number(db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM features WHERE layer_id = ?').get(targetLayerId).position));
     }
   }
+  if (Object.hasOwn(req.body, 'properties') || movedToLayerId !== feature.layer_id) {
+    fields.push('properties_json = ?');
+    // Cross-layer reconciliation runs inside the transaction below because it
+    // may add copied column definitions to the destination layer.
+    values.push(null);
+  }
   if (fields.length) {
-    fields.push('version = version + 1', 'updated_at = ?');
-    values.push(now(), featureId);
-    db.prepare(`UPDATE features SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-    db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(now(), feature.map_id);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (movedToLayerId !== feature.layer_id) {
+        nextProperties = reconcileFeatureCustomData(feature.layer_id, movedToLayerId, nextProperties).properties;
+      }
+      const propertiesIndex = fields.indexOf('properties_json = ?');
+      if (propertiesIndex >= 0) values[propertiesIndex] = JSON.stringify(nextProperties);
+      const updatedAt = now();
+      fields.push('version = version + 1', 'updated_at = ?');
+      values.push(updatedAt, featureId);
+      db.prepare(`UPDATE features SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+      if (movedToLayerId !== feature.layer_id) {
+        const reorder = db.prepare('UPDATE features SET position = ?, updated_at = ?, version = version + 1 WHERE id = ?');
+        db.prepare('SELECT id FROM features WHERE layer_id = ? ORDER BY position, id').all(feature.layer_id)
+          .forEach((row, position) => reorder.run(position, updatedAt, row.id));
+        db.prepare('UPDATE layers SET updated_at = ?, version = version + 1 WHERE id IN (?, ?)')
+          .run(updatedAt, feature.layer_id, movedToLayerId);
+      }
+      db.prepare('UPDATE maps SET updated_at = ?, version = version + 1 WHERE id = ?').run(updatedAt, feature.map_id);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
     audit('update', 'feature', featureId, `更新字段 ${fields.slice(0, -2).join(', ')}`);
   }
   const map = getMap(feature.map_id);
   const updated = findFeatureInMap(map, featureId);
-  emitMapOp(feature.map_id, 'feature.updated', req.user, { entity: updated, version: updated?.version });
+  if (movedToLayerId !== feature.layer_id) {
+    // A cross-layer move can copy custom column definitions into the target
+    // layer, so collaborators need the complete map rather than only the row.
+    emitMapOp(feature.map_id, 'map.updated', req.user, { entity: map, version: map.version });
+  } else {
+    emitMapOp(feature.map_id, 'feature.updated', req.user, { entity: updated, version: updated?.version });
+  }
   res.json(map);
 });
 
