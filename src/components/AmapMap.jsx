@@ -188,6 +188,9 @@ function overlayOptions(feature, layer, selected) {
       strokeColor: color,
       strokeWeight: styleNumber(feature, layer, 'weight', 5, 0, 48),
       strokeOpacity: styleNumber(feature, layer, 'opacity', .92, 0, 1),
+      isOutline: Boolean(feature.style?.isOutline),
+      outlineColor: feature.style?.outlineColor || '#FFFFFF',
+      borderWeight: styleNumber(feature, layer, 'borderWeight', 1, 0, 8),
       lineJoin: 'round',
       lineCap: 'round',
       zIndex: selected ? 130 : 100,
@@ -243,8 +246,8 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
   const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const motion = () => ({ immediately: Boolean(reducedMotion()), duration: reducedMotion() ? 0 : 350 });
   const beginMove = () => options.beforeMove?.();
-  const paddedPan = (position) => {
-    const { immediately, duration } = motion();
+  const paddedPan = (position, immediate = false) => {
+    const { immediately, duration } = immediate ? { immediately: true, duration: 0 } : motion();
     const padding = viewportPadding(map.getContainer());
     // Shift the requested point into the visible map area rather than beneath
     // the left drawer or the mobile details sheet.
@@ -329,14 +332,14 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
       }
       reportZoom();
     },
-    focusFeature(featureId) {
+    focusFeature(featureId, { immediate = false } = {}) {
       const record = registry.current.get(featureId);
       if (!record) return;
       beginMove();
       if (record.type === 'Point') {
-        paddedPan(record.overlay.getPosition());
+        paddedPan(record.overlay.getPosition(), immediate);
       } else {
-        map.setFitView([record.overlay], Boolean(reducedMotion()), viewportPadding(map.getContainer()), 18);
+        map.setFitView([record.overlay], immediate || Boolean(reducedMotion()), viewportPadding(map.getContainer()), 18);
       }
     },
     zoomIn() {
@@ -407,6 +410,7 @@ export default function AmapMap({
   onContextMenu,
   onPoiSelect,
   poiEnabled = true,
+  quietBasemap = false,
   onViewChange,
   onMeasurementChange,
   onRouteSelect,
@@ -521,7 +525,7 @@ export default function AmapMap({
         zoom: Math.max(AMAP_MIN_ZOOM, Math.min(AMAP_MAX_ZOOM, Number(currentData.zoom) || 13)),
         zooms: [AMAP_MIN_ZOOM, AMAP_MAX_ZOOM],
         mapStyle: config.mapStyle,
-        features: BASE_MAP_FEATURES,
+        features: quietBasemap ? ['bg', 'road'] : BASE_MAP_FEATURES,
         viewMode: '2D',
         pitch: 0,
         rotation: 0,
@@ -538,7 +542,7 @@ export default function AmapMap({
         jogEnable: !thumbnail,
         resizeEnable: true,
         showIndoorMap: false,
-        isHotspot: !thumbnail,
+        isHotspot: !thumbnail && !quietBasemap,
       };
       const baseLayers = createBaseLayerSet(AMap, currentData.base_map);
       // AMap 2.0 waits forever for Map.complete when non-visible satellite or
