@@ -38,6 +38,7 @@ db.exec(`
     visible INTEGER NOT NULL DEFAULT 1,
     position INTEGER NOT NULL DEFAULT 0,
     style_json TEXT NOT NULL DEFAULT '{}',
+    columns_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -50,6 +51,7 @@ db.exec(`
     description TEXT NOT NULL DEFAULT '',
     geometry_json TEXT NOT NULL,
     style_json TEXT NOT NULL DEFAULT '{}',
+    properties_json TEXT NOT NULL DEFAULT '{}',
     position INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -232,8 +234,14 @@ if (migrateLayerKinds) {
   // Old checkpoints predate layer types and must not restore an ambiguous kind.
   db.prepare('DELETE FROM content_checkpoints').run();
 }
+if (!layerColumns.some((column) => column.name === 'columns_json')) {
+  db.exec("ALTER TABLE layers ADD COLUMN columns_json TEXT NOT NULL DEFAULT '[]'");
+}
 
 const featureColumns = db.prepare('PRAGMA table_info(features)').all();
+if (!featureColumns.some((column) => column.name === 'properties_json')) {
+  db.exec("ALTER TABLE features ADD COLUMN properties_json TEXT NOT NULL DEFAULT '{}'");
+}
 if (!featureColumns.some((column) => column.name === 'position')) {
   db.exec(`
     ALTER TABLE features ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
@@ -429,10 +437,12 @@ export function getMap(id) {
     ...layer,
     visible: Boolean(layer.visible),
     style: parseJson(layer.style_json),
+    columns: parseJson(layer.columns_json, []),
     features: featureStmt.all(layer.id).map((feature) => ({
       ...feature,
       geometry: parseJson(feature.geometry_json),
       style: parseJson(feature.style_json),
+      properties: parseJson(feature.properties_json),
       attachments: attachmentsByFeature.get(feature.id) || [],
     })),
   }));
@@ -886,6 +896,100 @@ function contentError(message, status = 400, details = {}) {
   return Object.assign(new Error(message), { status, ...details });
 }
 
+const customColumnIdPattern = /^col_[A-Za-z0-9_-]{1,72}$/;
+const reservedCustomColumnNames = new Set([
+  'name', 'description', 'type', 'longitude', 'latitude', 'geometry', 'id', 'layer',
+  '名称', '说明',
+]);
+const unsafeObjectKeys = new Set(['__proto__', 'prototype', 'constructor']);
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizedColumnName(value) {
+  return String(value).trim().toLocaleLowerCase('en-US');
+}
+
+export function validateCustomColumns(value) {
+  if (!Array.isArray(value) || value.length > 50) throw contentError('自定义列必须为不超过 50 项的数组');
+  const ids = new Set();
+  const names = new Set();
+  return value.map((column) => {
+    if (!isPlainObject(column) || typeof column.id !== 'string' || !customColumnIdPattern.test(column.id)) {
+      throw contentError('自定义列 ID 格式无效');
+    }
+    if (typeof column.name !== 'string') throw contentError('自定义列名称必须为字符串');
+    const name = column.name.trim();
+    const normalized = normalizedColumnName(name);
+    if (!name || name.length > 80) throw contentError('自定义列名称长度应为 1 到 80 个字符');
+    if (reservedCustomColumnNames.has(normalized)) throw contentError(`“${name}”是保留列名`);
+    if (ids.has(column.id)) throw contentError('自定义列 ID 不能重复');
+    if (names.has(normalized)) throw contentError('自定义列名称不能重复');
+    ids.add(column.id);
+    names.add(normalized);
+    return { id: column.id, name };
+  });
+}
+
+export function validateFeatureProperties(value, columns, { partial = false } = {}) {
+  if (!isPlainObject(value)) throw contentError('自定义字段值必须为普通对象');
+  const allowed = new Set(validateCustomColumns(columns).map((column) => column.id));
+  const normalized = {};
+  for (const [key, cell] of Object.entries(value)) {
+    if (unsafeObjectKeys.has(key) || !allowed.has(key)) throw contentError(`未知的自定义列：${key}`);
+    if (typeof cell !== 'string' || cell.length > 10_000) throw contentError('自定义字段值必须为不超过 10000 个字符的字符串');
+    normalized[key] = cell;
+  }
+  if (!partial) return normalized;
+  return normalized;
+}
+
+function uniqueMovedColumnId(preferredId, usedIds) {
+  if (!usedIds.has(preferredId)) return preferredId;
+  let candidate;
+  do candidate = `col_${crypto.randomUUID()}`; while (usedIds.has(candidate));
+  return candidate;
+}
+
+// Moving a feature between ordinary layers keeps every cell. Columns with the
+// same case-insensitive name are mapped to the destination definition; missing
+// definitions are copied, preserving their IDs whenever possible.
+export function reconcileFeatureCustomData(sourceLayerId, targetLayerId, properties) {
+  const source = db.prepare('SELECT columns_json FROM layers WHERE id = ?').get(sourceLayerId);
+  const target = db.prepare('SELECT columns_json FROM layers WHERE id = ?').get(targetLayerId);
+  if (!source || !target) throw contentError('图层不存在', 404);
+  const sourceColumns = validateCustomColumns(parseJson(source.columns_json, []));
+  const targetColumns = validateCustomColumns(parseJson(target.columns_json, []));
+  const sourceProperties = validateFeatureProperties(properties, sourceColumns);
+  if (sourceLayerId === targetLayerId) return { columns: targetColumns, properties: sourceProperties, changed: false };
+
+  const targetByName = new Map(targetColumns.map((column) => [normalizedColumnName(column.name), column]));
+  const usedIds = new Set(targetColumns.map((column) => column.id));
+  const nextColumns = [...targetColumns];
+  const nextProperties = {};
+  for (const sourceColumn of sourceColumns) {
+    if (!Object.hasOwn(sourceProperties, sourceColumn.id)) continue;
+    let destination = targetByName.get(normalizedColumnName(sourceColumn.name));
+    if (!destination) {
+      destination = { id: uniqueMovedColumnId(sourceColumn.id, usedIds), name: sourceColumn.name };
+      if (nextColumns.length >= 50) throw contentError('目标图层自定义列已达到 50 列，无法移动要素', 409);
+      nextColumns.push(destination);
+      targetByName.set(normalizedColumnName(destination.name), destination);
+      usedIds.add(destination.id);
+    }
+    nextProperties[destination.id] = sourceProperties[sourceColumn.id];
+  }
+  const changed = JSON.stringify(nextColumns) !== JSON.stringify(targetColumns);
+  if (changed) {
+    db.prepare('UPDATE layers SET columns_json = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+      .run(JSON.stringify(nextColumns), iso(), targetLayerId);
+  }
+  return { columns: nextColumns, properties: nextProperties, changed };
+}
+
 function transaction(fn) {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -1084,7 +1188,9 @@ export function moveMapFeature(mapId, featureId, layerId, index) {
     if (!Number.isSafeInteger(index) || index < 0 || index > targetIds.length) throw contentError('无效要素位置');
     targetIds.splice(index, 0, featureId);
     const updated = iso();
-    db.prepare('UPDATE features SET layer_id = ? WHERE id = ?').run(layerId, featureId);
+    const reconciled = reconcileFeatureCustomData(feature.layer_id, layerId, parseJson(feature.properties_json));
+    db.prepare('UPDATE features SET layer_id = ?, properties_json = ? WHERE id = ?')
+      .run(layerId, JSON.stringify(reconciled.properties), featureId);
     const statement = db.prepare('UPDATE features SET position = ?, updated_at = ?, version = version + 1 WHERE id = ?');
     targetIds.forEach((itemId, position) => statement.run(position, updated, itemId));
     if (feature.layer_id !== layerId) {
@@ -1144,10 +1250,10 @@ function snapshotContent(map) {
     story_order: map.story_order,
     layers: map.layers.map((layer) => ({
       id: layer.id, name: layer.name, kind: layer.kind, visible: layer.visible, position: layer.position,
-      style: layer.style, created_at: layer.created_at, version: layer.version,
+      style: layer.style, columns: layer.columns, created_at: layer.created_at, version: layer.version,
       features: layer.features.map((feature) => ({
         id: feature.id, type: feature.type, name: feature.name, description: feature.description,
-        geometry: feature.geometry, style: feature.style, position: feature.position,
+        geometry: feature.geometry, style: feature.style, properties: feature.properties, position: feature.position,
         created_at: feature.created_at, version: feature.version,
         attachmentIds: feature.attachments.map((attachment) => attachment.id).sort((a, b) => a - b),
       })),
@@ -1222,21 +1328,24 @@ export function restoreContentCheckpoint(mapId, userId, token, expectedFingerpri
     const updated = iso();
     const layerIds = new Set(snapshot.layers.map((layer) => layer.id));
     const featureIds = new Set(snapshot.layers.flatMap((layer) => layer.features.map((feature) => feature.id)));
-    const upsertLayer = db.prepare(`INSERT INTO layers (id, map_id, name, kind, visible, position, style_json, created_at, updated_at, version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, visible = excluded.visible, position = excluded.position,
-        style_json = excluded.style_json, updated_at = excluded.updated_at, version = layers.version + 1`);
-    for (const layer of snapshot.layers) {
-      upsertLayer.run(layer.id, mapId, layer.name, layer.kind || 'features', Number(layer.visible), layer.position, JSON.stringify(layer.style), layer.created_at, updated, layer.version + 1);
-    }
-    const upsertFeature = db.prepare(`INSERT INTO features (id, layer_id, type, name, description, geometry_json, style_json, position, created_at, updated_at, version)
+    const upsertLayer = db.prepare(`INSERT INTO layers (id, map_id, name, kind, visible, position, style_json, columns_json, created_at, updated_at, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, visible = excluded.visible, position = excluded.position,
+        style_json = excluded.style_json, columns_json = excluded.columns_json, updated_at = excluded.updated_at, version = layers.version + 1`);
+    for (const layer of snapshot.layers) {
+      upsertLayer.run(layer.id, mapId, layer.name, layer.kind || 'features', Number(layer.visible), layer.position,
+        JSON.stringify(layer.style), JSON.stringify(layer.columns || []), layer.created_at, updated, layer.version + 1);
+    }
+    const upsertFeature = db.prepare(`INSERT INTO features (id, layer_id, type, name, description, geometry_json, style_json, properties_json, position, created_at, updated_at, version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET layer_id = excluded.layer_id, type = excluded.type, name = excluded.name,
-        description = excluded.description, geometry_json = excluded.geometry_json, style_json = excluded.style_json,
+        description = excluded.description, geometry_json = excluded.geometry_json, style_json = excluded.style_json, properties_json = excluded.properties_json,
         position = excluded.position, updated_at = excluded.updated_at, version = features.version + 1`);
     for (const layer of snapshot.layers) {
       for (const feature of layer.features) {
-        upsertFeature.run(feature.id, layer.id, feature.type, feature.name, feature.description, JSON.stringify(feature.geometry), JSON.stringify(feature.style), feature.position, feature.created_at, updated, feature.version + 1);
+        upsertFeature.run(feature.id, layer.id, feature.type, feature.name, feature.description,
+          JSON.stringify(feature.geometry), JSON.stringify(feature.style), JSON.stringify(feature.properties || {}),
+          feature.position, feature.created_at, updated, feature.version + 1);
       }
     }
     for (const layer of latest.layers) {
