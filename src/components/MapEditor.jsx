@@ -12,6 +12,9 @@ import { LanguageSwitch, useI18n } from '../i18n/index.jsx';
 import { applyMapOp, connectMapRoom } from '../realtime.js';
 import { AMAP_CONFIGURED } from '../amap.js';
 import AmapMap, { AMAP_MAX_ZOOM, AMAP_MIN_ZOOM } from './AmapMap.jsx';
+import SharedMapViewer from './SharedMapViewer.jsx';
+import StoryPresentation from './StoryPresentation.jsx';
+import { orderStoryRecords } from './shared-map-utils.js';
 import FeatureMediaGallery, {
   formatFileSize, MAX_ATTACHMENTS_PER_FEATURE, MAX_FILES_PER_UPLOAD, MEDIA_ACCEPT, validateMediaSelection,
 } from './FeatureMediaGallery.jsx';
@@ -496,6 +499,7 @@ export default function MapEditor({ mapId }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [trafficVisible, setTrafficVisible] = useState(false);
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
+  const [storyDetailId, setStoryDetailId] = useState(null);
   const [toast, setToast] = useState('');
   const [quickMediaFeatureId, setQuickMediaFeatureId] = useState(null);
   const [zoomState, setZoomState] = useState({ zoom: null, minZoom: AMAP_MIN_ZOOM, maxZoom: AMAP_MAX_ZOOM });
@@ -611,7 +615,9 @@ export default function MapEditor({ mapId }) {
     }
   }, [directions.visible, placeSearch.mode]);
   useEffect(() => {
-    if (isMobile && (selectedFeatureId !== null || featureDialog?.geometry?.type === 'Point')) setSheetState('half');
+    if (!isMobile) return;
+    if (featureDialog?.geometry?.type === 'Point') setSheetState('half');
+    else if (selectedFeatureId !== null) setSheetState((current) => current === 'collapsed' ? current : 'half');
   }, [isMobile, selectedFeatureId, featureDialog?.geometry?.type]);
 
   useEffect(() => {
@@ -683,6 +689,7 @@ export default function MapEditor({ mapId }) {
   useEffect(() => {
     const onKey = (event) => {
       if (event.defaultPrevented) return;
+      if (document.querySelector('.story-browsing')) return;
       const typing = event.target.closest?.('input,textarea,select,[contenteditable="true"]');
       const modifier = event.ctrlKey || event.metaKey;
       if (modifier && event.key.toLowerCase() === 'k') { event.preventDefault(); searchInputRef.current?.focus(); return; }
@@ -759,6 +766,22 @@ export default function MapEditor({ mapId }) {
     // The active route preview replaces its saved geometry while being edited.
     return { ...mapData, layers: mapData.layers.map((layer) => ({ ...layer, features: layer.features.filter((feature) => feature.id !== directions.target.featureId) })) };
   }, [mapData, directions.visible, directions.selectedAlternative, directions.target?.featureId]);
+  const presenting = (isMobile ? sheetState === 'collapsed' : sidebarCollapsed) && activeTool === 'pan' && !directions.visible && !featureDialog && !placeSearch.mode;
+  useEffect(() => { setStoryDetailId(null); }, [presenting]);
+  useEffect(() => {
+    if (!presenting || !document.querySelector('.editor-page.story-browsing') || activeTool !== 'pan' || directions.visible || featureDialog || placeSearch.mode || !visibleMapData) return undefined;
+    const records = orderStoryRecords(visibleMapData.layers.flatMap((layer) => layer.visible ? layer.features.map((feature) => ({ feature, layer })) : []), visibleMapData.story_order);
+    const current = records.find(({ feature }) => feature.id === selectedFeatureId) || records[0];
+    setContextMenu(null);
+    if (!current) { setSelectedFeatureId(null); return undefined; }
+    setSelectedFeatureId(current.feature.id);
+    setSelectedLayerId(current.layer.id);
+    const frame = requestAnimationFrame(() => {
+      mapRef.current?.resize();
+      mapRef.current?.focusFeature(current.feature.id, { immediate: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [presenting, visibleMapData, activeTool, directions.visible, featureDialog, placeSearch.mode, selectedFeatureId]);
 
   const replaceData = (data) => {
     if (Number(data?.version) < Number(mapDataLatestRef.current?.version)) return;
@@ -1290,6 +1313,12 @@ export default function MapEditor({ mapId }) {
   const previewMode = new URLSearchParams(window.location.search).get('preview') === '1';
   const draftPoint = featureDialog && !featureDialog.id && featureDialog.geometry?.type === 'Point' ? featureDialog : null;
   const selectedPointContext = selectedFeatureContext?.feature.type === 'Point' ? selectedFeatureContext : null;
+  const storyRecords = orderStoryRecords(visibleMapData.layers.flatMap((layer) => layer.visible ? layer.features.map((feature) => ({ feature, layer })) : []), mapData.story_order);
+  const selectStoryRecord = (feature, layer) => {
+    setSelectedFeatureId(feature.id);
+    setSelectedLayerId(layer.id);
+    setStoryDetailId(null);
+  };
   const activeCandidate = placeSearch.selectedPlace;
   const mapPopup = isMobile ? null : draftPoint ? {
     position: draftPoint.geometry.coordinates,
@@ -1343,10 +1372,10 @@ export default function MapEditor({ mapId }) {
 
   const routeEditor = <div ref={routeEditorRef} className="route-edit-slot"><DirectionsPanel directions={directions} lang={lang} canSave={canEdit && !editorHistory.busy} embedded onClose={directions.close} /></div>;
 
-  if (previewMode) return <PreviewEditorMap mapData={mapData} onExit={() => { window.history.replaceState({}, '', `/maps/${mapId}`); window.dispatchEvent(new PopStateEvent('popstate')); }} />;
+  if (previewMode) return <SharedMapViewer key={mapData.id} mapData={mapData} onSaveStoryOrder={canEdit ? (featureIds, expectedVersion) => performEdit('Story order', (expectedFingerprint) => api.saveStoryOrder(mapId, { featureIds, expectedVersion, expectedFingerprint })) : undefined} onExit={() => { window.history.replaceState({}, '', `/maps/${mapId}`); window.dispatchEvent(new PopStateEvent('popstate')); }} />;
 
   return (
-    <main className="editor-page">
+    <main className={`editor-page${presenting ? ' story-browsing' : ''}`}>
       <MobileSheet className={sidebarCollapsed ? 'collapsed' : ''} state={sheetState} onStateChange={setSheetState} label={t('editor.layerPanel')} lang={lang} onClose={() => setSheetState('collapsed')}>
         <section className="map-meta-panel">
           <div className="editor-title-row">
@@ -1402,14 +1431,14 @@ export default function MapEditor({ mapId }) {
           draftPoints={activeTool === 'measure' ? [] : draftPoints}
           hoverPoint={hoverPoint}
           mapData={visibleMapData}
-          editable={canEdit}
+          editable={canEdit && !presenting}
           trafficVisible={trafficVisible}
           measurementPoints={measurementPoints}
           measurementClosed={measurementClosed}
           onMeasurementChange={(points) => updateMeasurement(points)}
-          onContextMenu={onMapContextMenu}
-          onPoiSelect={(poi) => openPlaceDetail({...poi,source:'AMap'})}
-          poiEnabled={activeTool === 'pan' && !directions.visible && !draftPoint}
+          onContextMenu={presenting ? undefined : onMapContextMenu}
+          onPoiSelect={presenting ? undefined : (poi) => openPlaceDetail({...poi,source:'AMap'})}
+          poiEnabled={!presenting && activeTool === 'pan' && !directions.visible && !draftPoint}
           onViewChange={(view) => { if(view.source === 'user') placeSearch.setViewChanged(); }}
           routeAlternatives={directions.alternatives.map((route)=>({...route,selected:route.id===directions.selectedAlternativeId}))}
           routePlan={directions.selectedAlternative && directions.stops.every((stop)=>stop.position) ? {...directions.selectedAlternative,stops:directions.stops} : null}
@@ -1418,20 +1447,22 @@ export default function MapEditor({ mapId }) {
           onSavedRouteWaypoint={replanSavedRoute}
           markerColor={selectedLayer?.style.color || '#1a73e8'}
           markerIcon={selectedLayer?.style.icon || 'pin'}
-          onCandidateClick={openPlaceDetail}
-          onFeatureSelect={(feature, layer) => selectFeature(feature, layer, false, false)}
+          onCandidateClick={presenting ? undefined : openPlaceDetail}
+          onFeatureSelect={(feature, layer) => presenting ? (selectStoryRecord(feature, layer), setStoryDetailId(feature.id)) : selectFeature(feature, layer, false, false)}
           onFeatureGeometryChange={(feature, geometry) => persistGeometry(feature, geometry).catch(() => {})}
-          onMapClick={(point,event)=>handleMapClick(point,event).catch(()=>{})}
+          onMapClick={(point,event)=>{ if (presenting) setStoryDetailId(null); else handleMapClick(point,event).catch(()=>{}); }}
           onMapDoubleClick={(point)=>handleDoubleClick(point).catch(()=>{})}
           onMouseMove={(point) => setHoverPoint(activeTool === 'pan' || !point ? null : [point.lng, point.lat])}
           onMoveEnd={(center) => { currentCenterRef.current = center; }}
           onPopupClose={() => { if (placeSearch.mode === 'detail') backToSearchResults(); else setSelectedFeatureId(null); }}
           onReady={(controller) => { mapRef.current = controller; currentCenterRef.current = controller.getCenter(); }}
           onZoomStateChange={setZoomState}
-          popup={mapPopup}
+          popup={presenting ? null : mapPopup}
           searchCandidates={searchCandidates}
           selectedFeatureId={selectedFeatureId}
         />
+        {presenting ? <button className="story-panel-reopen" onClick={() => { setSidebarCollapsed(false); setSheetState('half'); }} aria-label={text('展开内容面板', 'Show content panel')}><ChevronRight size={23} /></button> : null}
+        {presenting ? <StoryPresentation records={storyRecords} selectedId={selectedFeatureId} showDetails={storyDetailId !== null && storyDetailId === selectedFeatureId} onCloseDetails={() => setStoryDetailId(null)} onSelect={selectStoryRecord} text={text} /> : null}
         <div className="map-account-actions">
           <LanguageSwitch className="editor-lang-switch" />
           <div className="presence-avatars" aria-label={t('editor.collaborators')}>
@@ -1451,7 +1482,7 @@ export default function MapEditor({ mapId }) {
           </button>
         </div>
         {measurementPoints.length ? <MeasurePanel points={measurementPoints} distance={measurementDistance(measurementPoints,measurementClosed)} area={measurementClosed ? measurementArea(measurementPoints) : 0} closed={measurementClosed} onClear={()=>updateMeasurement([],false)} onRemoveLast={()=>updateMeasurement((points)=>points.slice(0,-1))} onClose={()=>{updateMeasurement([],false);setActiveTool('pan');}} onToggleClosed={()=>updateMeasurement(measurementPoints,!measurementClosed)} lang={lang} /> : null}
-        {contextMenu ? <ContextMenu point={contextPosition} screen={contextMenu.screen} onHere={()=>{const position=contextPosition;setContextMenu(null);directions.close();placeSearch.reverseGeocodeDetail(position);}} onFrom={()=>{openDirections({from:{position:contextPosition}});setContextMenu(null);}} onTo={()=>{openDirections({to:{position:contextPosition}});setContextMenu(null);}} onMeasure={()=>startMeasurement(contextPosition)} onAddMarker={()=>addMarkerAt(contextPosition)} onClose={()=>setContextMenu(null)} canEdit={Boolean(canEdit&&selectedLayer)} lang={lang} /> : null}
+        {contextMenu && !presenting ? <ContextMenu point={contextPosition} screen={contextMenu.screen} onHere={()=>{const position=contextPosition;setContextMenu(null);directions.close();placeSearch.reverseGeocodeDetail(position);}} onFrom={()=>{openDirections({from:{position:contextPosition}});setContextMenu(null);}} onTo={()=>{openDirections({to:{position:contextPosition}});setContextMenu(null);}} onMeasure={()=>startMeasurement(contextPosition)} onAddMarker={()=>addMarkerAt(contextPosition)} onClose={()=>setContextMenu(null)} canEdit={Boolean(canEdit&&selectedLayer)} lang={lang} /> : null}
         <div className="map-control-stack"><button onClick={async () => { try { if (document.fullscreenElement) await document.exitFullscreen(); else if (document.querySelector('.editor-page').requestFullscreen) await document.querySelector('.editor-page').requestFullscreen(); else setToast(text('当前浏览器不支持全屏。', 'Fullscreen is unavailable.')); } catch { setToast(text('无法进入全屏。', 'Unable to enter fullscreen.')); } }} aria-label={text('全屏', 'Fullscreen')}>{fullscreen ? <Minimize size={19} /> : <Maximize size={19} />}</button><span /><button onClick={locateUser} aria-label={t('editor.locate')}><LocateFixed size={19} /></button><span /><button disabled={zoomState.zoom === null || zoomState.zoom >= zoomState.maxZoom} onClick={() => mapRef.current?.zoomIn()} aria-label={t('editor.zoomIn')}><ZoomIn size={19} /></button><button disabled={zoomState.zoom === null || zoomState.zoom <= zoomState.minZoom} onClick={() => mapRef.current?.zoomOut()} aria-label={t('editor.zoomOut')}><ZoomOut size={19} /></button></div>
       </section>
 
@@ -1463,33 +1494,6 @@ export default function MapEditor({ mapId }) {
       {shareDialog ? <ShareDialog map={mapData} share={share} onGenerate={generateShare} onClose={() => setShareDialog(false)} /> : null}
       {tableLayer ? <DataTableDialog canEdit={canEdit} layer={mapData.layers.find((layer) => layer.id === tableLayer.id) || tableLayer} onEdit={(feature) => setFeatureDialog({ ...feature, layerId: tableLayer.id })} onDelete={(feature) => deleteFeature(feature)} onClose={() => setTableLayer(null)} /> : null}
       {toast ? <div className="toast" role="status">{toast}</div> : null}
-    </main>
-  );
-}
-
-function PreviewEditorMap({ mapData, onExit }) {
-  const [panelOpen, setPanelOpen] = useState(true);
-  const [selectedContext, setSelectedContext] = useState(null);
-  const popup = selectedContext?.feature.type === 'Point' ? {
-    position: selectedContext.feature.geometry.coordinates,
-    content: <div className="feature-popup"><b>{selectedContext.feature.name}</b><p>{selectedContext.feature.description || selectedContext.layer.name}</p><FeatureMediaGallery attachments={selectedContext.feature.attachments} featureName={selectedContext.feature.name} compact /></div>,
-  } : null;
-  return (
-    <main className="preview-editor-page">
-      <button className="preview-exit" onClick={onExit}><ArrowLeft size={17} /> 返回编辑器</button>
-      <aside className={panelOpen ? 'public-side-panel' : 'public-side-panel collapsed'}>
-        <header><button className="icon-button" onClick={() => setPanelOpen((value) => !value)}><Menu size={20} /></button><div><h1>{mapData.name}</h1><p>{mapData.description}</p></div></header>
-        {mapData.layers.map((layer) => <section key={layer.id}><h2><span style={{ background: layer.style.color || '#1a73e8' }} />{layer.name}</h2>{layer.features.slice(0, 10).map((feature) => <p key={feature.id}>{feature.name}</p>)}</section>)}
-      </aside>
-      <AmapMap
-        className="editor-map"
-        mapData={mapData}
-        onFeatureSelect={(feature, layer) => setSelectedContext({ feature, layer })}
-        onMapClick={() => setSelectedContext(null)}
-        popup={popup}
-        selectedFeatureId={selectedContext?.feature.id || null}
-        showZoomControls
-      />
     </main>
   );
 }

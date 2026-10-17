@@ -102,6 +102,7 @@ export const api = {
   restoreCheckpoint: (mapId, body) => request(`/api/maps/${mapId}/restore-checkpoint`, { method: 'POST', body: JSON.stringify(body) }),
   reorderLayers: (mapId, body) => request(`/api/maps/${mapId}/reorder`, { method: 'POST', body: JSON.stringify(body) }),
   reorderFeatures: (mapId, body) => request(`/api/maps/${mapId}/features/reorder`, { method: 'POST', body: JSON.stringify(body) }),
+  saveStoryOrder: (mapId, body) => request(`/api/maps/${mapId}/story-order`, { method: 'POST', body: JSON.stringify(body) }),
   deleteMap: (mapId) => request(`/api/maps/${mapId}`, { method: 'DELETE' }),
   addLayer: (mapId, body) => request(`/api/maps/${mapId}/layers`, { method: 'POST', body: JSON.stringify(body) }),
   saveDirections: (mapId, body) => request(`/api/maps/${mapId}/directions`, { method: 'POST', body: JSON.stringify(body) }),

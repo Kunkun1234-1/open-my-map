@@ -13,6 +13,7 @@ import {
   listProjectMembers, updateProjectMemberRole, removeProjectMember, transferProjectOwnership,
   hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, setMapFavorite,
   reorderMapLayers, reorderLayerFeatures, moveMapFeature, updateMapLayerStyle,
+  updateMapStoryOrder,
   createContentCheckpoint, restoreContentCheckpoint,
   saveMapDirections, validateDirectionsPayload,
 } from './db.js';
@@ -126,6 +127,23 @@ function assertFingerprintMatch(req, res, map) {
   if (expected === map.contentFingerprint) return true;
   res.status(409).json({ error: '地图已被更新，请基于最新内容继续编辑', conflict: true, latest: map, currentFingerprint: map.contentFingerprint });
   return false;
+}
+
+function assertStoryOrderGuards(req, res) {
+  const body = req.body || {};
+  if (!Object.hasOwn(body, 'expectedVersion') || !Object.hasOwn(body, 'expectedFingerprint')) {
+    res.status(428).json({ error: '保存故事顺序需要地图版本和内容指纹' });
+    return false;
+  }
+  if (!Number.isSafeInteger(body.expectedVersion) || body.expectedVersion <= 0) {
+    res.status(400).json({ error: '无效地图版本' });
+    return false;
+  }
+  if (typeof body.expectedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedFingerprint)) {
+    res.status(400).json({ error: '无效地图内容指纹' });
+    return false;
+  }
+  return true;
 }
 
 // Fingerprint guarding is opt-in for ordinary editing and mandatory for history
@@ -504,6 +522,19 @@ app.post('/api/maps/:mapId/reorder', (req, res) => {
   if (!assertVersionMatch(req, res, latest.version, latest)) return;
   const map = reorderMapLayers(mapId, req.body?.layerIds);
   audit('reorder', 'map', mapId, '调整图层顺序');
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.json(map);
+});
+
+app.post('/api/maps/:mapId/story-order', (req, res) => {
+  const mapId = id(req.params.mapId);
+  if (!assertEditor(req, res, mapId)) return;
+  if (!assertStoryOrderGuards(req, res)) return;
+  const latest = getMap(mapId);
+  if (!assertFingerprintMatch(req, res, latest)) return;
+  if (!assertVersionMatch(req, res, latest.version, latest)) return;
+  const map = updateMapStoryOrder(mapId, req.body?.featureIds);
+  audit('story-order', 'map', mapId, '调整分享故事顺序');
   emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
   res.json(map);
 });

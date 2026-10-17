@@ -25,6 +25,7 @@ db.exec(`
     center_lat REAL NOT NULL DEFAULT 31.2304,
     center_lng REAL NOT NULL DEFAULT 121.4737,
     zoom INTEGER NOT NULL DEFAULT 12,
+    story_order_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -202,6 +203,13 @@ if (!mapColumns.some((column) => column.name === 'created_by_user_id')) {
 }
 if (!mapColumns.some((column) => column.name === 'deleted_at')) {
   db.exec('ALTER TABLE maps ADD COLUMN deleted_at TEXT');
+}
+const migrateStoryOrder = !mapColumns.some((column) => column.name === 'story_order_json');
+if (migrateStoryOrder) {
+  db.exec("ALTER TABLE maps ADD COLUMN story_order_json TEXT NOT NULL DEFAULT '[]'");
+  // Older checkpoints were fingerprinted without story order and cannot safely
+  // participate in the new optimistic-concurrency contract.
+  db.prepare('DELETE FROM content_checkpoints').run();
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_maps_project_id ON maps(project_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_maps_created_by ON maps(created_by_user_id)');
@@ -390,6 +398,8 @@ export function getMap(id) {
     WHERE m.id = ? AND m.deleted_at IS NULL
   `).get(id);
   if (!map) return null;
+  map.story_order = parseJson(map.story_order_json, []);
+  if (!Array.isArray(map.story_order)) map.story_order = [];
   const layers = db.prepare('SELECT * FROM layers WHERE map_id = ? ORDER BY position, id').all(id);
   const featureStmt = db.prepare('SELECT * FROM features WHERE layer_id = ? ORDER BY position, id');
   const attachmentRows = db.prepare(`
@@ -1045,6 +1055,22 @@ export function reorderLayerFeatures(mapId, layerId, featureIds) {
   });
 }
 
+export function updateMapStoryOrder(mapId, featureIds) {
+  return transaction(() => {
+    const existing = db.prepare(`
+      SELECT f.id FROM features f
+      JOIN layers l ON l.id = f.layer_id
+      WHERE l.map_id = ?
+      ORDER BY l.position, l.id, f.position, f.id
+    `).all(mapId).map((row) => row.id);
+    assertPermutation(featureIds, existing, '必须提供当前地图全部要素的完整排列');
+    const updated = iso();
+    db.prepare('UPDATE maps SET story_order_json = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+      .run(JSON.stringify(featureIds), updated, mapId);
+    return getMap(mapId);
+  });
+}
+
 export function moveMapFeature(mapId, featureId, layerId, index) {
   return transaction(() => {
     const feature = db.prepare('SELECT f.*, l.kind AS layer_kind FROM features f JOIN layers l ON l.id = f.layer_id WHERE f.id = ? AND l.map_id = ?').get(featureId, mapId);
@@ -1115,6 +1141,7 @@ function stableJson(value) {
 function snapshotContent(map) {
   return {
     name: map.name, description: map.description, owner: map.owner, base_map: map.base_map,
+    story_order: map.story_order,
     layers: map.layers.map((layer) => ({
       id: layer.id, name: layer.name, kind: layer.kind, visible: layer.visible, position: layer.position,
       style: layer.style, created_at: layer.created_at, version: layer.version,
@@ -1218,8 +1245,8 @@ export function restoreContentCheckpoint(mapId, userId, token, expectedFingerpri
       }
       if (!layerIds.has(layer.id)) db.prepare('DELETE FROM layers WHERE id = ?').run(layer.id);
     }
-    db.prepare('UPDATE maps SET name = ?, description = ?, owner = ?, base_map = ?, updated_at = ?, version = version + 1 WHERE id = ?')
-      .run(snapshot.name, snapshot.description, snapshot.owner, snapshot.base_map, updated, mapId);
+    db.prepare('UPDATE maps SET name = ?, description = ?, owner = ?, base_map = ?, story_order_json = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+      .run(snapshot.name, snapshot.description, snapshot.owner, snapshot.base_map, JSON.stringify(snapshot.story_order || []), updated, mapId);
     const map = getMap(mapId);
     return { map, fingerprint: mapContentFingerprint(map) };
   });
