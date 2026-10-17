@@ -6,12 +6,14 @@ export default function LibraryDialog({
   onClose,
   children,
   closeLabel,
+  initialFocusRef,
 }) {
   const dialogRef = useRef(null);
   const headingId = useId();
   useEffect(() => {
     const dialog = dialogRef.current;
     dialog.showModal();
+    initialFocusRef?.current?.focus();
     return () => dialog.close();
   }, []);
   return (

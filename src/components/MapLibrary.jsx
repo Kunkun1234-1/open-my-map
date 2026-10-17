@@ -1,18 +1,19 @@
+import UserAvatar from './UserAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   ArrowDownUp,
-  ArrowRight,
+  ArrowLeft,
   Bell,
-  CalendarDays,
   Check,
   ChevronDown,
   Folder,
   Grid2X2,
-  List,
   Menu,
   Plus,
   Search,
   SlidersHorizontal,
+  Table2,
   Star,
   Trash2,
   Users,
@@ -24,9 +25,11 @@ import { useAuth } from '../auth.jsx';
 import { useI18n } from '../i18n/index.jsx';
 import LibrarySidebar from './library/LibrarySidebar.jsx';
 import LibraryHero from './library/LibraryHero.jsx';
+import HomeOverview from './library/HomeOverview.jsx';
 import LibraryDialog from './library/LibraryDialog.jsx';
-import MapCard from './library/MapCard.jsx';
+import MapsTable from './library/MapsTable.jsx';
 import ProjectMembers from './library/ProjectMembers.jsx';
+import ProjectsTable from './library/ProjectsTable.jsx';
 import { relativeDate } from './library/helpers.js';
 import './library/dashboard.css';
 
@@ -38,12 +41,14 @@ export default function MapLibrary() {
   const [trashedMaps, setTrashedMaps] = useState([]);
   const [section, setSection] = useState('home');
   const [selectedProjectId, setSelectedProjectId] = useState('all');
+  const [projectSwitching, setProjectSwitching] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('modified');
   const [basemapFilter, setBasemapFilter] = useState('all');
   const [filterOpen, setFilterOpen] = useState(false);
-  const [listMode, setListMode] = useState(false);
+  const [mapView, setMapView] = useState('grid');
+  const [projectView, setProjectView] = useState('grid');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -59,6 +64,14 @@ export default function MapLibrary() {
   const [membersRefreshKey, setMembersRefreshKey] = useState(0);
   const searchRef = useRef(null);
   const activityRef = useRef(null);
+  const projectTransitionRef = useRef(null);
+  const projectTransitionSequence = useRef(0);
+
+  useEffect(() => () => {
+    projectTransitionSequence.current += 1;
+    projectTransitionRef.current?.skipTransition();
+    projectTransitionRef.current = null;
+  }, []);
 
   const loadLibrary = useCallback(async () => {
     const [nextMaps, nextProjects, nextTrashed] = await Promise.all([
@@ -117,14 +130,13 @@ export default function MapLibrary() {
     (project) =>
       user?.role === 'admin' ||
       project.my_role === 'owner' ||
-      project.my_role === 'editor' ||
-      project.owner_user_id === user?.id,
+      project.my_role === 'editor',
   );
   const canManageProject =
     selectedProject &&
     (user?.role === 'admin' ||
-      selectedProject.my_role === 'owner' ||
-      selectedProject.owner_user_id === user?.id);
+      selectedProject.my_role === 'owner');
+  const canCreateInProject = !selectedProject || editableProjects.some((project) => project.id === selectedProject.id);
   const isTrash = section === 'trash';
   const isProjects = section === 'projects';
   const filterTab =
@@ -177,7 +189,7 @@ export default function MapLibrary() {
     sort,
     lang,
   ]);
-  const recentProjects = [...projects]
+  const visibleProjects = [...projects]
     .filter(
       (project) =>
         !normalizedQuery ||
@@ -185,8 +197,7 @@ export default function MapLibrary() {
           .toLocaleLowerCase()
           .includes(normalizedQuery),
     )
-    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
-    .slice(0, isProjects ? undefined : 3);
+    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
   const tabs = [
     ['all', t('library.tabAll')],
     ['owned', t('dashboard.owned')],
@@ -194,21 +205,71 @@ export default function MapLibrary() {
     ['favorites', t('dashboard.favorites')],
   ];
 
+  const transitionProject = (update, switching = false) => {
+    const sequence = ++projectTransitionSequence.current;
+    projectTransitionRef.current?.skipTransition();
+    projectTransitionRef.current = null;
+    if (!document.startViewTransition || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      flushSync(() => {
+        setProjectSwitching(false);
+        update();
+      });
+      return;
+    }
+    // Prepare the old selection before the browser captures its outgoing frame.
+    flushSync(() => setProjectSwitching(switching));
+    const transition = document.startViewTransition(() => {
+      if (sequence === projectTransitionSequence.current) flushSync(update);
+    });
+    projectTransitionRef.current = transition;
+    transition.ready.catch(() => {});
+    const finish = () => {
+      if (projectTransitionRef.current !== transition) return;
+      projectTransitionRef.current = null;
+      setProjectSwitching(false);
+    };
+    transition.finished.then(finish, finish);
+  };
   const changeSection = (next) => {
-    setSection(next);
-    setSelectedProjectId('all');
-    setActiveTab('all');
-    setBasemapFilter('all');
-    setMembersOpen(false);
-    setSidebarOpen(false);
-    setFilterOpen(false);
+    const update = () => {
+      setSection(next);
+      setSelectedProjectId('all');
+      setActiveTab('all');
+      setBasemapFilter('all');
+      setMembersOpen(false);
+      setSidebarOpen(false);
+      setFilterOpen(false);
+      setQuery('');
+      setMapView(next === 'home' ? 'grid' : 'table');
+      if (next === 'home' || next === 'projects') setProjectView('grid');
+    };
+    if (next === 'projects' && selectedProjectId !== 'all') {
+      transitionProject(update);
+    } else {
+      projectTransitionSequence.current += 1;
+      projectTransitionRef.current?.skipTransition();
+      projectTransitionRef.current = null;
+      setProjectSwitching(false);
+      update();
+    }
   };
   const chooseProject = (projectId) => {
-    setSelectedProjectId(Number(projectId));
-    setSection('maps');
-    setActiveTab('all');
-    setMembersOpen(false);
-    setSidebarOpen(false);
+    const update = () => {
+      setSelectedProjectId(Number(projectId));
+      setSection('maps');
+      setMapView('table');
+      setActiveTab('all');
+      setQuery('');
+      setBasemapFilter('all');
+      setFilterOpen(false);
+      setMembersOpen(false);
+      setSidebarOpen(false);
+    };
+    if (selectedProjectId === Number(projectId) && section === 'maps') {
+      update();
+    } else {
+      transitionProject(update, selectedProjectId !== 'all' && section === 'maps');
+    }
   };
   const openDialog = (next) => {
     setError('');
@@ -216,6 +277,7 @@ export default function MapLibrary() {
     setSidebarOpen(false);
   };
   const openCreateMap = () => {
+    if (!canCreateInProject) return;
     if (!editableProjects.length) {
       openDialog('project');
       return;
@@ -225,16 +287,6 @@ export default function MapLibrary() {
       editableProjects[0];
     setMapForm({ name: '', projectId: String(project.id) });
     openDialog('map');
-  };
-  const perform = async (action, success) => {
-    try {
-      setError('');
-      await action();
-      await loadLibrary();
-      if (success) setToast(t(success));
-    } catch (requestError) {
-      setError(requestError.message);
-    }
   };
   const submitDialog = async (event) => {
     event.preventDefault();
@@ -272,16 +324,6 @@ export default function MapLibrary() {
       setDialogBusy(false);
     }
   };
-  const trashMap = (map) => {
-    if (!window.confirm(t('dashboard.confirmTrash', { name: map.name })))
-      return;
-    return perform(() => api.trashMap(map.id), 'dashboard.trashSuccess');
-  };
-  const deleteForever = (map) => {
-    if (!window.confirm(t('dashboard.permanentWarning', { name: map.name })))
-      return;
-    return perform(() => api.deleteMap(map.id), 'dashboard.deletedSuccess');
-  };
   const emptyTitle = isTrash
     ? 'dashboard.emptyTrash'
     : filterTab === 'favorites'
@@ -304,6 +346,7 @@ export default function MapLibrary() {
         projects={projects}
         section={section}
         selectedProjectId={selectedProjectId}
+        animateProjectSelection={projectSwitching}
         onNavigate={changeSection}
         onProject={chooseProject}
         onCreateProject={() => openDialog('project')}
@@ -392,17 +435,19 @@ export default function MapLibrary() {
               onClick={() => navigate('/me')}
               aria-label={t('dashboard.account')}
             >
-              {(user?.displayName || user?.name || '?').slice(0, 1)}
+              <UserAvatar user={user} />
             </button>
           </div>
         </header>
         {section === 'home' ? (
           <LibraryHero
+            user={user}
+            onCreateMap={openCreateMap}
+            onCreateProject={() => openDialog('project')}
+            onSettings={() => navigate('/me#home-appearance')}
             t={t}
             slide={slide}
             setSlide={setSlide}
-            onCreateMap={openCreateMap}
-            onCreateProject={() => openDialog('project')}
           />
         ) : null}
         <div className="dashboard-workspace">
@@ -418,11 +463,24 @@ export default function MapLibrary() {
               </button>
             </div>
           ) : null}
-          {!isProjects ? (
+          {section === 'home' ? (
+            <HomeOverview maps={maps} projects={projects} user={user} query={normalizedQuery} loading={loading} lang={lang} t={t} onMap={(mapId) => navigate(`/maps/${mapId}`)} onProject={chooseProject} onMoreMaps={() => changeSection('maps')} onMoreProjects={() => changeSection('projects')} onRefresh={loadLibrary} onToast={setToast} />
+          ) : null}
+          {section !== 'home' && !isProjects ? (
             <section
-              className="dashboard-maps-section"
+              key={selectedProjectId}
+              className={`dashboard-maps-section${selectedProject && !isTrash ? ' is-project-detail' : ''}`}
+              style={{ viewTransitionName: projectSwitching ? 'project-maps' : undefined }}
               aria-label={t('dashboard.yourMaps')}
             >
+              {selectedProject && !isTrash ? (
+                <div className="dashboard-project-breadcrumb">
+                  <button type="button" onClick={() => changeSection('projects')}><ArrowLeft size={15} />{t('dashboard.backToProjects')}</button>
+                  <span>/</span>
+                  <span>{selectedProject.name}</span>
+                  <small>{t('dashboard.mapCount', { n: selectedProject.map_count || 0 })}</small>
+                </div>
+              ) : null}
               <div className="dashboard-section-toolbar">
                 <div className="dashboard-section-heading">
                   <h2>
@@ -453,27 +511,9 @@ export default function MapLibrary() {
                   ) : null}
                 </div>
                 <div className="dashboard-view-actions">
-                  <div
-                    className="dashboard-view-toggle"
-                    role="group"
-                    aria-label={t('library.toggleList')}
-                  >
-                    <button
-                      className={!listMode ? 'active' : ''}
-                      onClick={() => setListMode(false)}
-                      aria-label={t('dashboard.gridView')}
-                      aria-pressed={!listMode}
-                    >
-                      <Grid2X2 size={15} />
-                    </button>
-                    <button
-                      className={listMode ? 'active' : ''}
-                      onClick={() => setListMode(true)}
-                      aria-label={t('dashboard.listView')}
-                      aria-pressed={listMode}
-                    >
-                      <List size={15} />
-                    </button>
+                  <div className="dashboard-view-toggle" role="group" aria-label={t('dashboard.mapViews')}>
+                    <button type="button" className={mapView === 'grid' ? 'active' : ''} onClick={() => setMapView('grid')} aria-label={t('dashboard.gridView')} aria-pressed={mapView === 'grid'} title={t('dashboard.gridView')}><Grid2X2 size={15} /></button>
+                    <button type="button" className={mapView === 'table' ? 'active' : ''} onClick={() => setMapView('table')} aria-label={t('dashboard.tableView')} aria-pressed={mapView === 'table'} title={t('dashboard.tableView')}><Table2 size={15} /></button>
                   </div>
                   <label className="dashboard-sort">
                     <ArrowDownUp size={14} />
@@ -503,10 +543,11 @@ export default function MapLibrary() {
                       <span className="dashboard-filter-dot" />
                     ) : null}
                   </button>
-                  {section !== 'home' && !isTrash ? (
+                  {!isTrash ? (
                     <button
                       className="dashboard-primary compact"
                       onClick={openCreateMap}
+                      disabled={!canCreateInProject}
                     >
                       <Plus size={15} />
                       {t('library.createMap')}
@@ -526,13 +567,12 @@ export default function MapLibrary() {
                     <select
                       aria-label={t('dashboard.chooseProject')}
                       value={selectedProjectId}
-                      onChange={(event) =>
-                        setSelectedProjectId(
-                          event.target.value === 'all'
-                            ? 'all'
-                            : Number(event.target.value),
-                        )
-                      }
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (isTrash) setSelectedProjectId(value === 'all' ? 'all' : Number(value));
+                        else if (value === 'all') changeSection('maps');
+                        else chooseProject(value);
+                      }}
                     >
                       <option value="all">{t('dashboard.allProjects')}</option>
                       {projects.map((project) => (
@@ -612,20 +652,16 @@ export default function MapLibrary() {
               ) : null}
               {loading ? (
                 <div
-                  className="dashboard-map-grid"
+                  className="dashboard-table-loading"
                   aria-label={t('dashboard.loadingMaps')}
                 >
                   {[0, 1, 2, 3].map((n) => (
-                    <div className="dashboard-map-skeleton" key={n} />
+                    <div key={n} />
                   ))}
                 </div>
               ) : (
                 <>
-                  {filtered.length === 0 &&
-                  (isTrash ||
-                    filterTab !== 'all' ||
-                    normalizedQuery ||
-                    basemapFilter !== 'all') ? (
+                  {filtered.length === 0 ? (
                     <div className="dashboard-empty">
                       <span>
                         {isTrash ? (
@@ -637,82 +673,43 @@ export default function MapLibrary() {
                         )}
                       </span>
                       <h3>{t(emptyTitle)}</h3>
-                      <p>{t(emptyHint)}</p>
+                      <p>{selectedProject && !isTrash && !normalizedQuery && basemapFilter === 'all' ? t('library.noMatchInProject', { name: selectedProject.name }) : t(emptyHint)}</p>
+                      {!isTrash && canCreateInProject && !normalizedQuery && basemapFilter === 'all' ? <button className="dashboard-secondary" onClick={openCreateMap}><Plus size={15} />{t('library.createMap')}</button> : null}
                     </div>
                   ) : null}
-                  <div
-                    className={`dashboard-map-grid${listMode ? ' is-list' : ''}`}
-                  >
-                    {filtered.map((map, index) => (
-                      <MapCard
-                        key={map.id}
-                        map={map}
-                        index={index}
-                        user={user}
-                        lang={lang}
-                        t={t}
-                        trashed={isTrash}
-                        onOpen={() => navigate(`/maps/${map.id}`)}
-                        onPreview={() => navigate(`/maps/${map.id}?preview=1`)}
-                        onFavorite={() =>
-                          perform(() =>
-                            api.favoriteMap(map.id, !map.is_favorite),
-                          )
-                        }
-                        onTrash={() => trashMap(map)}
-                        onRestore={() =>
-                          perform(
-                            () => api.restoreMap(map.id),
-                            'dashboard.restoreSuccess',
-                          )
-                        }
-                        onDelete={() => deleteForever(map)}
-                      />
-                    ))}
-                    {!isTrash &&
-                    filterTab === 'all' &&
-                    !normalizedQuery &&
-                    basemapFilter === 'all' ? (
-                      <button
-                        className="dashboard-create-card"
-                        onClick={openCreateMap}
-                      >
-                        <span>
-                          <Plus size={26} strokeWidth={1.5} />
-                        </span>
-                        <strong>{t('dashboard.createNewMap')}</strong>
-                        <small>{t('dashboard.mapHint')}</small>
-                      </button>
-                    ) : null}
-                  </div>
+                  <MapsTable
+                    key={isTrash ? 'trash' : 'active'}
+                    maps={filtered}
+                    user={user}
+                    lang={lang}
+                    t={t}
+                    trashed={isTrash}
+                    view={mapView}
+                    onOpen={(mapId) => navigate(`/maps/${mapId}`)}
+                    onPreview={(mapId) => navigate(`/maps/${mapId}?preview=1`)}
+                    onCreateMap={canCreateInProject && filterTab === 'all' && !normalizedQuery && basemapFilter === 'all' ? openCreateMap : undefined}
+                    onRefresh={loadLibrary}
+                    onToast={setToast}
+                  />
                 </>
               )}
             </section>
           ) : null}
-          {!isTrash && (section === 'home' || isProjects) ? (
+          {!isTrash && isProjects ? (
             <section className="dashboard-projects-section">
               <div className="dashboard-projects-heading">
                 <h2>
-                  {t(
-                    isProjects
-                      ? 'dashboard.projects'
-                      : 'dashboard.recentProjects',
-                  )}
+                  {t('dashboard.projects')}
                 </h2>
-                <button
-                  onClick={
-                    isProjects
-                      ? () => openDialog('project')
-                      : () => changeSection('projects')
-                  }
-                >
-                  {t(
-                    isProjects ? 'library.createProject' : 'dashboard.viewAll',
-                  )}
-                  {isProjects ? <Plus size={15} /> : <ArrowRight size={15} />}
-                </button>
+                <div className="dashboard-projects-actions">
+                  <div className="dashboard-view-toggle" role="group" aria-label={t('dashboard.projectViews')}>
+                    <button type="button" className={projectView === 'grid' ? 'active' : ''} onClick={() => setProjectView('grid')} aria-label={t('dashboard.projectGridView')} aria-pressed={projectView === 'grid'} title={t('dashboard.projectGridView')}><Grid2X2 size={15} /></button>
+                    <button type="button" className={projectView === 'table' ? 'active' : ''} onClick={() => setProjectView('table')} aria-label={t('dashboard.projectTableView')} aria-pressed={projectView === 'table'} title={t('dashboard.projectTableView')}><Table2 size={15} /></button>
+                  </div>
+                  <button className="dashboard-secondary compact" onClick={() => openDialog('project')}><Plus size={15} />{t('library.createProject')}</button>
+                </div>
               </div>
-              {!loading && recentProjects.length === 0 ? (
+              {!loading && visibleProjects.length === 0 ? (
                 <div className="dashboard-empty dashboard-project-empty">
                   <Folder size={28} />
                   <h3>{t('dashboard.emptyProjects')}</h3>
@@ -726,35 +723,17 @@ export default function MapLibrary() {
                   </button>
                 </div>
               ) : (
-                <div className="dashboard-project-grid">
-                  {recentProjects.map((project, index) => (
-                    <button
-                      className="dashboard-project-card"
-                      key={project.id}
-                      onClick={() => chooseProject(project.id)}
-                      data-testid={`recent-project-${project.id}`}
-                    >
-                      <span
-                        className={`dashboard-project-cover space-color-${index % 5}`}
-                      >
-                        <Folder size={21} strokeWidth={1.5} />
-                      </span>
-                      <span className="dashboard-project-text">
-                        <strong>{project.name}</strong>
-                        <small>
-                          {t('dashboard.mapCount', {
-                            n: project.map_count || 0,
-                          })}{' '}
-                          ·{' '}
-                          {t('dashboard.updated', {
-                            date: relativeDate(project.updated_at, lang),
-                          })}
-                        </small>
-                      </span>
-                      <ArrowRight size={15} />
-                    </button>
-                  ))}
-                </div>
+                <ProjectsTable
+                  projects={visibleProjects}
+                  user={user}
+                  lang={lang}
+                  t={t}
+                  view={projectView}
+                  onOpen={chooseProject}
+                  onCreateProject={() => openDialog('project')}
+                  onRefresh={loadLibrary}
+                  onToast={setToast}
+                />
               )}
             </section>
           ) : null}
@@ -811,6 +790,7 @@ export default function MapLibrary() {
                   {t('library.projectDesc')}
                   <textarea
                     rows={3}
+                    maxLength={2000}
                     value={projectForm.description}
                     onChange={(event) =>
                       setProjectForm({
@@ -829,7 +809,7 @@ export default function MapLibrary() {
                   <input
                     autoFocus
                     required
-                    maxLength={180}
+                    maxLength={120}
                     value={mapForm.name}
                     onChange={(event) =>
                       setMapForm({ ...mapForm, name: event.target.value })

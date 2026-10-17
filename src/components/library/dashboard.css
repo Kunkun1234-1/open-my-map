@@ -51,6 +51,19 @@
   flex-direction: column;
   gap: 2px;
 }
+.dashboard-spaces-heading {
+  width: 100%;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.dashboard-spaces-heading:hover,
+.dashboard-spaces-heading[aria-current='page'] {
+  color: #273346;
+}
 .dashboard-main-nav button,
 .dashboard-spaces button {
   display: flex;
@@ -148,46 +161,6 @@
 .dashboard-sidebar-bottom {
   margin-top: auto;
   padding-top: 14px;
-}
-.dashboard-promo {
-  width: 146px;
-  min-height: 131px;
-  margin: 0 11px 10px;
-  border: 0;
-  border-radius: 10px;
-  text-align: left;
-  padding: 14px 14px;
-  position: relative;
-  overflow: hidden;
-  color: #27313c;
-  background-color: #dce3e7;
-  background-image:
-    linear-gradient(to bottom, #dce3e7 0%, #dce3e7cc 39%, transparent 72%),
-    url('/images/cover-lake.webp');
-  background-size: cover;
-  background-position: center;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
-}
-.dashboard-promo > span:first-child {
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 16px;
-  position: relative;
-  z-index: 1;
-}
-.dashboard-promo-arrow {
-  position: absolute;
-  bottom: 11px;
-  right: 11px;
-  width: 25px;
-  height: 25px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: #fff;
-  color: #253346;
 }
 .dashboard-sidebar-utilities {
   display: flex;
@@ -374,12 +347,15 @@
   line-height: 12px;
 }
 .dashboard-hero h1 {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  max-width: 640px;
   font-family: Georgia, 'Times New Roman', 'Noto Serif SC', serif;
   font-size: 38px;
   font-weight: 400;
   line-height: 1.055;
   letter-spacing: -1.1px;
-  margin: 0 0 13px;
+  margin: 0 0 24px;
   color: #152033;
 }
 .dashboard-hero-description {
@@ -393,6 +369,20 @@
   align-items: center;
   gap: 15px;
 }
+.dashboard-hero-settings {
+  position: absolute;
+  top: 78px;
+  right: 25px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #ffffffb3;
+  border-radius: 7px;
+  background: #ffffffb3;
+  color: #4a5564;
+}
+.dashboard-hero-settings:hover { background: #fff; color: #172031; }
 .dashboard-primary,
 .dashboard-secondary {
   border-radius: 7px;
@@ -665,6 +655,73 @@
   overflow: hidden;
   background: #edf1f4;
 }
+.dashboard-cover-change {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  min-height: 27px;
+  border: 1px solid #ffffff50;
+  border-radius: 5px;
+  background: #172033b8;
+  color: #fff;
+  font-size: 11px;
+  box-shadow: 0 1px 7px #17203324;
+}
+.dashboard-cover-change:hover:not(:disabled) {
+  background: #172033e6;
+}
+.dashboard-cover-change:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+.dashboard-cover-preview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #f3f5f8;
+  margin-bottom: 14px;
+}
+.dashboard-project-cover-field {
+  margin-top: 14px;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.dashboard-project-cover-field legend {
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+.dashboard-project-cover-field .dashboard-cover-preview {
+  aspect-ratio: 16 / 7;
+  margin-top: 8px;
+  margin-bottom: 9px;
+}
+.dashboard-project-cover-field .dashboard-cover-hint {
+  margin: 8px 0;
+}
+.dashboard-cover-hint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #8993a1;
+  margin: 12px 0;
+}
+.dashboard-cover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.dashboard-cover-dialog .dialog-actions {
+  flex-wrap: wrap;
+}
 .dashboard-map-cover {
   width: 100%;
   height: 100%;
@@ -927,6 +984,236 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 17px;
+}
+.dashboard-projects-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dashboard-project-overview-card .dashboard-card-cover {
+  height: 130px;
+}
+.dashboard-project-overview-card .dashboard-card-details {
+  min-height: 140px;
+}
+.dashboard-map-card .dashboard-project-row-actions {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+.dashboard-project-overview-card .dashboard-map-title {
+  font-size: 14px;
+}
+.dashboard-project-overview-card .dashboard-map-title > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dashboard-project-table-hint {
+  margin: 0 0 12px;
+  color: #7c8593;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.dashboard-project-table-scroll {
+  overflow-x: auto;
+  border: 1px solid #e7ebf1;
+  border-radius: 9px;
+  background: #fff;
+}
+.dashboard-project-table {
+  width: 100%;
+  min-width: 800px;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+.dashboard-map-table {
+  min-width: 1000px;
+}
+.dashboard-table-loading {
+  border: 1px solid #e7ebf1;
+  border-radius: 9px;
+  padding: 12px 16px;
+}
+.dashboard-table-loading > div {
+  height: 42px;
+  margin: 8px 0;
+  border-radius: 4px;
+  background: #f4f6f9;
+}
+.dashboard-project-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  color: #8090a2;
+  font-size: 12px;
+  min-width: 0;
+}
+.dashboard-project-breadcrumb button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
+  color: #556a84;
+  white-space: nowrap;
+}
+.dashboard-project-breadcrumb > span:last-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dashboard-project-breadcrumb small {
+  white-space: nowrap;
+  margin-left: auto;
+}
+.dashboard-maps-section.is-project-detail {
+  animation: dashboard-detail-enter 420ms cubic-bezier(.22, 1, .36, 1);
+}
+.dashboard-maps-section .dashboard-section-heading h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dashboard-maps-section .dashboard-section-toolbar {
+  flex-wrap: wrap;
+}
+@keyframes dashboard-detail-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+::view-transition { pointer-events: none; }
+::view-transition-group(*) {
+  animation-duration: 760ms;
+  animation-timing-function: cubic-bezier(.4, 0, .16, 1);
+}
+::view-transition-group(root),
+::view-transition-group(project-maps) {
+  animation-duration: 280ms;
+  animation-timing-function: ease-out;
+}
+::view-transition-old(*) {
+  animation-duration: 140ms;
+  animation-timing-function: ease-out;
+}
+::view-transition-new(*) {
+  animation-duration: 280ms;
+  animation-timing-function: ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-maps-section.is-project-detail { animation: none; }
+  ::view-transition-group(*),
+  ::view-transition-group(root),
+  ::view-transition-group(project-maps),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation-duration: 0s; }
+}
+.dashboard-project-table th {
+  padding: 12px 16px;
+  background: #f7f9fb;
+  color: #768191;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.dashboard-project-table td {
+  padding: 14px 16px;
+  border-top: 1px solid #edf0f5;
+  color: #526070;
+  vertical-align: middle;
+}
+.dashboard-project-table tbody tr:hover {
+  background: #fafbfd;
+}
+.dashboard-project-table td.editable:hover {
+  background: #edf3fb;
+  cursor: text;
+}
+.dashboard-project-table-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 130px;
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+.dashboard-project-table-name svg {
+  flex-shrink: 0;
+  color: #71859e;
+}
+.dashboard-project-table-name strong {
+  color: #273346;
+  font-weight: 500;
+}
+.dashboard-project-description {
+  min-width: 150px;
+  max-width: 320px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.dashboard-project-role {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: #f0f3f7;
+  color: #667386;
+  white-space: nowrap;
+}
+.dashboard-project-row-actions {
+  display: flex;
+  gap: 7px;
+  white-space: nowrap;
+}
+.dashboard-project-row-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid #e4e9f0;
+  border-radius: 5px;
+  background: #fff;
+  color: #526070;
+  font-size: 11px;
+}
+.dashboard-project-row-actions button:hover:not(:disabled) {
+  background: #edf3fb;
+  border-color: #ccd8e9;
+}
+.dashboard-project-row-actions button.danger {
+  color: #b84747;
+}
+.dashboard-project-row-actions button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+.dashboard-project-row-actions .dashboard-action-icon {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+}
+.dashboard-project-row-actions .dashboard-action-icon[aria-pressed='true'] {
+  color: #aa7b23;
+  background: #fff8e9;
+  border-color: #eadab8;
+}
+.dashboard-project-row-actions button:focus-visible {
+  outline: 2px solid #758fb7;
+  outline-offset: 2px;
+}
+.dashboard-project-delete-hint,
+.dashboard-muted {
+  color: #8993a1;
+}
+.dashboard-project-delete-hint {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.dashboard-dialog .dashboard-danger-button {
+  background: #b84747;
 }
 .dashboard-project-card {
   border: 1px solid #f0f1f4;
@@ -1288,16 +1575,6 @@
   .dashboard-project-text small {
     font-size: 11px;
   }
-  .dashboard-promo {
-    width: 175px;
-    min-height: 157px;
-    margin: 0 14px 12px;
-    padding: 17px;
-  }
-  .dashboard-promo > span:first-child {
-    font-size: 13px;
-    line-height: 20px;
-  }
   .dashboard-account {
     padding: 15px;
     width: calc(100% + 30px);
@@ -1367,10 +1644,6 @@
     padding-left: 8px;
     font-size: 15px;
     gap: 6px;
-  }
-  .dashboard-promo {
-    width: 140px;
-    margin-left: 8px;
   }
   .dashboard-account {
     width: calc(100% + 16px);
@@ -1453,10 +1726,6 @@
   }
   .dashboard-spaces {
     max-height: calc(100dvh - 570px);
-  }
-  .dashboard-promo {
-    width: calc(100% - 20px);
-    min-height: 100px;
   }
   .dashboard-account {
     width: calc(100% + 28px);

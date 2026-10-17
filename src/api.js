@@ -27,9 +27,12 @@ async function request(path, options = {}) {
   return body;
 }
 
-async function uploadMedia(path, files) {
+async function uploadMedia(path, files, field = 'files', fields = {}) {
   const body = new FormData();
-  for (const file of files) body.append('files', file, file.name);
+  for (const file of files) body.append(field, file, file.name);
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) body.append(key, String(value ?? ''));
+  }
   const headers = {};
   const sessionId = getSessionId();
   if (sessionId) headers.authorization = `Bearer ${sessionId}`;
@@ -54,6 +57,16 @@ const adminRequest = (path, options = {}) => request(path, {
   },
 });
 
+async function fetchProtectedImage(url) {
+  const token = getSessionId();
+  const response = await fetch(url, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `请求失败 (${response.status})`);
+  }
+  return response.blob();
+}
+
 async function downloadAdminBackup() {
   const response = await fetch('/api/admin/backup', {
     headers: { 'x-admin-key': window.sessionStorage.getItem('open-my-map-admin-key') || '' },
@@ -74,6 +87,20 @@ async function downloadAdminBackup() {
 }
 
 export const api = {
+  mapPreview: (mapId) => request(`/api/maps/${mapId}/preview`),
+  uploadCover: (kind, entityId, file, metadata = {}) => uploadMedia(`/api/${kind}/${entityId}/cover`, [file], 'file', metadata),
+  resetCover: (kind, entityId, metadata) => request(`/api/${kind}/${entityId}/cover`, {
+    method: 'DELETE',
+    ...(metadata ? { body: JSON.stringify(metadata) } : {}),
+  }),
+  fetchCover: fetchProtectedImage,
+  fetchAvatar: fetchProtectedImage,
+  fetchImage: fetchProtectedImage,
+  uploadHomeBackground: (file) => uploadMedia('/api/auth/me/home-background', [file], 'file'),
+  resetHomeBackground: () => request('/api/auth/me/home-background', { method: 'DELETE' }),
+  updateHomeAppearance: (body) => request('/api/auth/me/home-appearance', { method: 'PATCH', body: JSON.stringify(body) }),
+  uploadAvatar: (file) => uploadMedia('/api/auth/me/avatar', [file], 'file'),
+  resetAvatar: () => request('/api/auth/me/avatar', { method: 'DELETE' }),
   health: () => request('/api/health'),
   me: () => request('/api/auth/me'),
   updateProfile: (body) => request('/api/auth/me', { method: 'PATCH', body: JSON.stringify(body) }),
@@ -85,6 +112,8 @@ export const api = {
   revokeSessions: () => request('/api/auth/sessions', { method: 'DELETE' }),
   projects: () => request('/api/projects'),
   createProject: (body) => request('/api/projects', { method: 'POST', body: JSON.stringify(body) }),
+  updateProject: (projectId, body) => request(`/api/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteProject: (projectId) => request(`/api/projects/${projectId}`, { method: 'DELETE' }),
   inviteProjectMember: (projectId, body) => request(`/api/projects/${projectId}/members`, { method: 'POST', body: JSON.stringify(body) }),
   projectMembers: (projectId) => request(`/api/projects/${projectId}/members`),
   updateProjectMember: (projectId, userId, body) => request(`/api/projects/${projectId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify(body) }),

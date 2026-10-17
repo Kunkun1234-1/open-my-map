@@ -390,6 +390,7 @@ function showBaseLayerSet(map, layerSet, baseMapKey) {
 }
 
 export default function AmapMap({
+  thumbnail = false,
   activeTool = '',
   editable = false,
   candidateColor = DEFAULT_CANDIDATE_COLOR,
@@ -527,17 +528,17 @@ export default function AmapMap({
         pitchEnable: false,
         rotateEnable: false,
         showBuildingBlock: false,
-        animateEnable: !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
-        dragEnable: true,
-        zoomEnable: true,
-        scrollWheel: true,
-        touchZoom: true,
+        animateEnable: !thumbnail && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
+        dragEnable: !thumbnail,
+        zoomEnable: !thumbnail,
+        scrollWheel: !thumbnail,
+        touchZoom: !thumbnail,
         doubleClickZoom: false,
-        keyboardEnable: true,
-        jogEnable: true,
+        keyboardEnable: !thumbnail,
+        jogEnable: !thumbnail,
         resizeEnable: true,
         showIndoorMap: false,
-        isHotspot: true,
+        isHotspot: !thumbnail,
       };
       const baseLayers = createBaseLayerSet(AMap, currentData.base_map);
       // AMap 2.0 waits forever for Map.complete when non-visible satellite or

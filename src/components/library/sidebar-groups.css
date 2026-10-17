@@ -1,0 +1,112 @@
+.dashboard-sidebar .sidebar-groups {
+  min-height: 0;
+  gap: 3px;
+}
+
+.dashboard-sidebar .sidebar-nav-group {
+  min-width: 0;
+  border-top: 1px solid #ebeef2;
+  padding-top: 7px;
+  margin-top: 7px;
+}
+
+.dashboard-sidebar .sidebar-nav-group-heading {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 29px;
+  gap: 2px;
+  align-items: center;
+}
+
+.dashboard-sidebar .sidebar-nav-group-heading > button {
+  margin: 0;
+}
+
+.dashboard-sidebar .sidebar-nav-group-link {
+  min-width: 0;
+}
+
+.dashboard-sidebar .sidebar-nav-group-toggle {
+  min-width: 29px;
+  width: 29px;
+  min-height: 30px;
+  justify-content: center;
+  padding: 0;
+  gap: 0;
+  color: #8a919c;
+}
+
+.dashboard-sidebar .sidebar-nav-group-toggle:hover {
+  color: #172031;
+}
+
+.dashboard-sidebar .sidebar-nav-children {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+  padding-left: 17px;
+}
+
+.dashboard-sidebar .sidebar-nav-children > button {
+  min-width: 0;
+  min-height: 29px;
+  gap: 9px;
+  padding: 5px 9px;
+  font-size: 10.5px;
+}
+
+.dashboard-sidebar .sidebar-nav-children > button > svg {
+  flex: 0 0 auto;
+}
+
+.dashboard-sidebar .sidebar-nav-children > button > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-sidebar .sidebar-project-children {
+  max-height: calc(100vh - 430px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.dashboard-sidebar .sidebar-project-children .space-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.dashboard-sidebar .sidebar-project-children .dashboard-new-space {
+  color: #6f7784;
+}
+
+@media (min-width: 1450px) {
+  .dashboard-sidebar .sidebar-nav-group-heading {
+    grid-template-columns: minmax(0, 1fr) 34px;
+  }
+
+  .dashboard-sidebar .sidebar-nav-group-toggle {
+    min-width: 34px;
+    width: 34px;
+    min-height: 36px;
+  }
+
+  .dashboard-sidebar .sidebar-nav-children {
+    padding-left: 21px;
+  }
+
+  .dashboard-sidebar .sidebar-nav-children > button {
+    min-height: 35px;
+    padding: 7px 11px;
+    font-size: 12.5px;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-sidebar .sidebar-project-children {
+    max-height: calc(100vh - 450px);
+  }
+}

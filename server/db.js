@@ -71,6 +71,9 @@ db.exec(`
     display_name TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL UNIQUE,
     avatar_url TEXT NOT NULL DEFAULT '',
+    avatar_stored_name TEXT,
+    home_background_stored_name TEXT,
+    home_hero_titles TEXT NOT NULL DEFAULT '[]',
     wx_unionid TEXT,
     role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('admin', 'editor')),
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
@@ -190,6 +193,9 @@ const addUserColumn = (name, def) => {
 };
 addUserColumn('display_name', "TEXT NOT NULL DEFAULT ''");
 addUserColumn('avatar_url', "TEXT NOT NULL DEFAULT ''");
+addUserColumn('avatar_stored_name', 'TEXT');
+addUserColumn('home_background_stored_name', 'TEXT');
+addUserColumn('home_hero_titles', "TEXT NOT NULL DEFAULT '[]'");
 addUserColumn('wx_unionid', 'TEXT');
 addUserColumn('password_hash', 'TEXT');
 
@@ -236,6 +242,15 @@ if (!featureColumns.some((column) => column.name === 'position')) {
   `);
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_features_layer_position ON features(layer_id, position, id)');
+
+const addCoverColumn = (table) => {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((column) => column.name === 'cover_stored_name')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN cover_stored_name TEXT`);
+  }
+};
+addCoverColumn('projects');
+addCoverColumn('maps');
 
 // 全局账户仅保留 admin / editor；历史 viewer 迁移为普通用户。
 db.prepare("UPDATE users SET role = 'editor' WHERE role = 'viewer'").run();
@@ -380,7 +395,14 @@ export function listMaps() {
     LEFT JOIN projects p ON p.id = m.project_id
     WHERE m.deleted_at IS NULL
     ORDER BY m.updated_at DESC
-  `).all();
+  `).all().map((map) => {
+    const result = {
+      ...map,
+      cover_url: map.cover_stored_name ? `/api/maps/${map.id}/cover?v=${encodeURIComponent(map.cover_stored_name)}` : null,
+    };
+    delete result.cover_stored_name;
+    return result;
+  });
 }
 
 export function getMap(id) {
@@ -426,8 +448,48 @@ export function getMap(id) {
       attachments: attachmentsByFeature.get(feature.id) || [],
     })),
   }));
+  map.cover_url = map.cover_stored_name ? `/api/maps/${map.id}/cover?v=${encodeURIComponent(map.cover_stored_name)}` : null;
+  delete map.cover_stored_name;
   map.contentFingerprint = mapContentFingerprint(map);
   return map;
+}
+
+export function getMapPreview(id) {
+  const map = db.prepare(`
+    SELECT id, base_map, center_lat, center_lng, zoom
+    FROM maps
+    WHERE id = ?
+  `).get(id);
+  if (!map) return null;
+
+  const layers = db.prepare(`
+    SELECT id, visible, style_json
+    FROM layers
+    WHERE map_id = ?
+    ORDER BY position, id
+  `).all(id);
+  const featureStmt = db.prepare(`
+    SELECT id, type, name, geometry_json, style_json
+    FROM features
+    WHERE layer_id = ?
+    ORDER BY position, id
+  `);
+
+  return {
+    ...map,
+    layers: layers.map((layer) => ({
+      id: layer.id,
+      visible: Boolean(layer.visible),
+      style: parseJson(layer.style_json),
+      features: featureStmt.all(layer.id).map((feature) => ({
+        id: feature.id,
+        type: feature.type,
+        name: feature.name,
+        geometry: parseJson(feature.geometry_json),
+        style: parseJson(feature.style_json),
+      })),
+    })),
+  };
 }
 
 export function getPublicMap(token) {
@@ -464,16 +526,25 @@ export function adminStats() {
 export function listProjects() {
   return db.prepare(`
     SELECT p.id, p.name, p.description, p.owner_user_id, p.status, p.created_at,
-      COALESCE((SELECT MAX(m.updated_at) FROM maps m WHERE m.project_id = p.id AND m.deleted_at IS NULL), p.updated_at) AS updated_at,
+      p.cover_stored_name,
+      MAX(p.updated_at, COALESCE((SELECT MAX(m.updated_at) FROM maps m WHERE m.project_id = p.id AND m.deleted_at IS NULL), p.updated_at)) AS updated_at,
       u.name AS owner_name, u.email AS owner_email,
       (SELECT COUNT(*) FROM maps m WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS map_count,
+      (SELECT COUNT(*) FROM maps m WHERE m.project_id = p.id) AS total_map_count,
       (SELECT COUNT(*) FROM layers l JOIN maps m ON m.id = l.map_id WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS layer_count,
       (SELECT COUNT(*) FROM features f JOIN layers l ON l.id = f.layer_id JOIN maps m ON m.id = l.map_id WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS feature_count,
       (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) AS member_count
     FROM projects p
     LEFT JOIN users u ON u.id = p.owner_user_id
     ORDER BY p.updated_at DESC, p.id DESC
-  `).all();
+  `).all().map((project) => {
+    const result = {
+      ...project,
+      cover_url: project.cover_stored_name ? `/api/projects/${project.id}/cover?v=${encodeURIComponent(project.cover_stored_name)}` : null,
+    };
+    delete result.cover_stored_name;
+    return result;
+  });
 }
 
 export function listLibraryProjects() {
@@ -487,7 +558,9 @@ export function listLibraryProjects() {
       created_at: project.created_at,
       updated_at: project.updated_at,
       owner_name: project.owner_name,
+      cover_url: project.cover_url,
       map_count: project.map_count,
+      total_map_count: project.total_map_count,
       layer_count: project.layer_count,
       feature_count: project.feature_count,
       member_count: project.member_count,
@@ -543,6 +616,10 @@ export function listSessionsByUser(userId) {
 
 export function publicUser(row) {
   if (!row) return null;
+  const storedHeroTitles = parseJson(row.home_hero_titles, []);
+  const homeHeroTitles = Array.from({ length: 3 }, (_, index) => (
+    Array.isArray(storedHeroTitles) && typeof storedHeroTitles[index] === 'string' ? storedHeroTitles[index] : ''
+  ));
   return {
     id: row.id,
     name: row.name,
@@ -550,7 +627,13 @@ export function publicUser(row) {
     email: row.email,
     role: row.role,
     status: row.status,
-    avatarUrl: row.avatar_url || '',
+    avatarUrl: row.avatar_stored_name
+      ? `/api/users/${row.id}/avatar?v=${encodeURIComponent(row.avatar_stored_name)}`
+      : row.avatar_url || '',
+    homeBackgroundUrl: row.home_background_stored_name
+      ? `/api/auth/me/home-background?v=${encodeURIComponent(row.home_background_stored_name)}`
+      : '',
+    homeHeroTitles,
     createdAt: row.created_at,
     lastSeen: row.last_seen,
   };
@@ -562,6 +645,69 @@ export function getUserById(userId) {
 
 export function getUserByEmail(email) {
   return db.prepare('SELECT * FROM users WHERE lower(email) = lower(?)').get(String(email || ''));
+}
+
+export function updateUserAvatar(userId, avatarStoredName) {
+  const user = getUserById(userId);
+  if (!user) {
+    const err = new Error('用户不存在');
+    err.status = 404;
+    throw err;
+  }
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE users SET avatar_stored_name = ?, last_seen = ? WHERE id = ?')
+      .run(avatarStoredName, iso(), userId);
+    const updated = publicUser(getUserById(userId));
+    db.exec('COMMIT');
+    return { user: updated, previousAvatarStoredName: user.avatar_stored_name || null };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function updateUserHomeBackground(userId, homeBackgroundStoredName) {
+  const user = getUserById(userId);
+  if (!user) {
+    const err = new Error('用户不存在');
+    err.status = 404;
+    throw err;
+  }
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE users SET home_background_stored_name = ?, last_seen = ? WHERE id = ?')
+      .run(homeBackgroundStoredName, iso(), userId);
+    const updated = publicUser(getUserById(userId));
+    db.exec('COMMIT');
+    return {
+      user: updated,
+      previousHomeBackgroundStoredName: user.home_background_stored_name || null,
+    };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function updateUserHomeHeroTitles(userId, titles) {
+  const user = getUserById(userId);
+  if (!user) {
+    const err = new Error('用户不存在');
+    err.status = 404;
+    throw err;
+  }
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE users SET home_hero_titles = ?, last_seen = ? WHERE id = ?')
+      .run(JSON.stringify(titles), iso(), userId);
+    const updated = publicUser(getUserById(userId));
+    db.exec('COMMIT');
+    return updated;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function createRegisteredUser({ name, email, passwordHash }) {
@@ -577,20 +723,106 @@ export function createRegisteredUser({ name, email, passwordHash }) {
   return getUserById(userId);
 }
 
+const MAX_PROJECT_NAME_LENGTH = 120;
+const MAX_PROJECT_DESCRIPTION_LENGTH = 2000;
+
+function projectError(message, status = 400) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function validateProjectMetadata(changes, current = null) {
+  const hasName = Object.hasOwn(changes || {}, 'name');
+  const hasDescription = Object.hasOwn(changes || {}, 'description');
+  if (current && !hasName && !hasDescription) throw projectError('请提供要修改的项目名称或描述');
+
+  const name = hasName ? String(changes.name ?? '').trim() : current?.name;
+  if (!name) throw projectError('项目名称不能为空');
+  if (name.length > MAX_PROJECT_NAME_LENGTH) throw projectError(`项目名称不能超过 ${MAX_PROJECT_NAME_LENGTH} 个字符`);
+
+  const description = hasDescription ? String(changes.description ?? '') : current?.description || '';
+  if (description.length > MAX_PROJECT_DESCRIPTION_LENGTH) {
+    throw projectError(`项目描述不能超过 ${MAX_PROJECT_DESCRIPTION_LENGTH} 个字符`);
+  }
+  return { name, description };
+}
+
 export function createProjectOwnedBy(user, { name, description = '' }) {
   const created = iso();
-  const projectName = String(name || '').trim().slice(0, 120) || '未命名项目';
+  const metadata = validateProjectMetadata({ name, description });
   const result = db.prepare(`
     INSERT INTO projects (name, description, owner_user_id, status, created_at, updated_at)
     VALUES (?, ?, ?, 'active', ?, ?)
-  `).run(projectName, String(description || ''), user.id, created, created);
+  `).run(metadata.name, metadata.description, user.id, created, created);
   const projectId = Number(result.lastInsertRowid);
   db.prepare(`
     INSERT INTO project_members (project_id, user_id, role, created_at)
     VALUES (?, ?, 'owner', ?)
   `).run(projectId, user.id, created);
-  audit('create', 'project', projectId, `用户 ${user.email || user.id} 创建项目“${projectName}”`);
+  audit('create', 'project', projectId, `用户 ${user.email || user.id} 创建项目“${metadata.name}”`);
   return listProjects().find((project) => project.id === projectId);
+}
+
+function projectListItem(projectId, actor) {
+  const project = listProjects().find((item) => item.id === projectId);
+  if (!project) return null;
+  const myRole = actor.role === 'admin' ? 'admin' : membershipForProject(actor.id, projectId)?.role;
+  return { ...project, my_role: myRole || null };
+}
+
+function updateProjectRecord(projectId, changes, actor, { coverStoredName, requireMetadata = false } = {}) {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+  if (!project) throw projectError('项目不存在', 404);
+  if (!canEditProject(actor, projectId)) throw projectError('仅项目所有者或数据管理员可修改项目', 403);
+
+  const hasMetadata = Object.hasOwn(changes || {}, 'name') || Object.hasOwn(changes || {}, 'description');
+  if (requireMetadata && !hasMetadata) throw projectError('请提供要修改的项目名称或描述');
+  const metadata = hasMetadata
+    ? validateProjectMetadata(changes, project)
+    : { name: project.name, description: project.description };
+  const nextCoverStoredName = coverStoredName === undefined ? project.cover_stored_name : coverStoredName;
+
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE projects SET name = ?, description = ?, cover_stored_name = ?, updated_at = ? WHERE id = ?')
+      .run(metadata.name, metadata.description, nextCoverStoredName, iso(), projectId);
+    const updatedProject = projectListItem(projectId, actor);
+    db.exec('COMMIT');
+    return {
+      project: updatedProject,
+      previousCoverStoredName: project.cover_stored_name || null,
+      metadataChanged: hasMetadata,
+    };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function updateProjectMetadata(projectId, changes, actor) {
+  const result = updateProjectRecord(projectId, changes, actor, { requireMetadata: true });
+  audit('update', 'project', projectId, `更新项目元数据“${result.project.name}”`);
+  return result.project;
+}
+
+export function updateProjectMetadataAndCover(projectId, changes, actor, coverStoredName) {
+  return updateProjectRecord(projectId, changes, actor, { coverStoredName });
+}
+
+export function deleteEmptyProject(projectId, actor) {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+  if (!project) throw projectError('项目不存在', 404);
+  if (!canEditProject(actor, projectId)) throw projectError('仅项目所有者或数据管理员可删除项目', 403);
+
+  const mapCount = Number(db.prepare('SELECT COUNT(*) AS count FROM maps WHERE project_id = ?').get(projectId).count);
+  if (mapCount > 0) {
+    throw projectError('项目中仍有地图（包括回收站地图），请先移动或永久删除这些地图', 409);
+  }
+
+  db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+  audit('delete', 'project', projectId, `删除空项目“${project.name}”`);
+  return { coverStoredName: project.cover_stored_name || null };
 }
 
 function assertProjectOwner(projectId, actor) {
@@ -615,12 +847,22 @@ export function listProjectMembers(projectId, actor) {
   }
   return db.prepare(`
     SELECT pm.project_id AS projectId, pm.user_id AS userId, pm.role, pm.created_at AS createdAt,
-      u.email, COALESCE(NULLIF(u.display_name, ''), u.name) AS name, u.avatar_url AS avatarUrl
+      u.email, COALESCE(NULLIF(u.display_name, ''), u.name) AS name, u.avatar_url, u.avatar_stored_name
     FROM project_members pm
     JOIN users u ON u.id = pm.user_id
     WHERE pm.project_id = ?
     ORDER BY CASE pm.role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END, pm.created_at, u.id
-  `).all(projectId);
+  `).all(projectId).map((member) => {
+    const result = {
+      ...member,
+      avatarUrl: member.avatar_stored_name
+        ? `/api/users/${member.userId}/avatar?v=${encodeURIComponent(member.avatar_stored_name)}`
+        : member.avatar_url || '',
+    };
+    delete result.avatar_url;
+    delete result.avatar_stored_name;
+    return result;
+  });
 }
 
 export function inviteProjectMember(projectId, { email, role = 'editor', actor }) {
@@ -848,10 +1090,14 @@ function visibleMapRows(user, trashed) {
   `).all(user.id, user.id, user.role);
   return rows.map((map) => ({
     ...map,
+    cover_url: map.cover_stored_name ? `/api/maps/${map.id}/cover?v=${encodeURIComponent(map.cover_stored_name)}` : null,
     my_role: user.role === 'admin' ? 'admin' : map.my_role,
     is_owner: user.role === 'admin' || map.owner_user_id === user.id || map.my_role === 'owner',
     is_favorite: Boolean(map.is_favorite),
-  }));
+  })).map((map) => {
+    delete map.cover_stored_name;
+    return map;
+  });
 }
 
 export function setMapFavorite(user, mapId, favorite) {
