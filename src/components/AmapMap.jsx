@@ -5,6 +5,9 @@ import { AMAP_CONFIGURED, loadAMap, toDisplayLngLat, toStorageLngLat } from '../
 import { getBaseMapConfig, normalizeBaseMapKey } from '../utils.js';
 import { useI18n } from '../i18n/index.jsx';
 import { nearestRouteSegment, geometryCoordinates, safeStorageBounds, viewportPadding } from './map-engine-utils.js';
+import { getMarkerIcon, MARKER_ICON_IDS } from './marker-icons.js';
+import { draftShapeGeometry, SHAPE_TOOLS } from './editor/shape-drawing.js';
+import { lineArrowLayout } from './editor/line-direction.js';
 import './editor.css';
 
 export const AMAP_MIN_ZOOM = 2;
@@ -13,13 +16,6 @@ export const AMAP_MAX_ZOOM = 19;
 const DEFAULT_COLOR = '#1a73e8';
 const DEFAULT_CANDIDATE_COLOR = '#f9ab00';
 const BASE_MAP_FEATURES = ['bg', 'point', 'road', 'building'];
-const MARKER_ICONS = new Set(['pin', 'circle', 'star', 'flag', 'home', 'food']);
-const MARKER_ICON_PATHS = {
-  star: ['m12 3 2.8 5.8 6.4.9-4.6 4.5 1.1 6.4-5.7-3-5.7 3 1.1-6.4L2.9 9.7l6.3-.9Z'],
-  flag: ['M5 21V4', 'M5 4c5-4 9 4 14 0v10c-5 4-9-4-14 0'],
-  home: ['m3 10 9-7 9 7', 'M5 9v12h14V9', 'M9 21v-8h6v8'],
-  food: ['M4 3v5a3 3 0 0 0 6 0V3', 'M7 3v19', 'M20 3c-4 2-5 6-5 9h5', 'M20 3v19'],
-};
 
 function displayPosition(coordinates) {
   return toDisplayLngLat(coordinates[0], coordinates[1]);
@@ -89,7 +85,7 @@ function featureColor(feature, layer) {
 }
 
 function featureIcon(feature, layer) {
-  return [feature.style?.icon, layer.style?.icon, 'pin'].find((icon) => MARKER_ICONS.has(icon));
+  return getMarkerIcon([feature.style?.icon, layer.style?.icon, 'pin'].find((icon) => MARKER_ICON_IDS.has(icon))).id;
 }
 
 function styleNumber(feature, layer, field, defaultValue, min, max) {
@@ -102,7 +98,7 @@ function styleNumber(feature, layer, field, defaultValue, min, max) {
 }
 
 function pinElement(color, selected = false, candidate = false, iconValue = 'pin') {
-  const icon = MARKER_ICONS.has(iconValue) ? iconValue : 'pin';
+  const icon = getMarkerIcon(iconValue).id;
   const wrapper = document.createElement('div');
   wrapper.className = 'custom-map-pin-wrap amap-native-pin-wrap';
   wrapper.style.width = '30px';
@@ -111,33 +107,28 @@ function pinElement(color, selected = false, candidate = false, iconValue = 'pin
   const pin = document.createElement('span');
   pin.className = `custom-map-pin${selected ? ' selected' : ''}${candidate ? ' candidate' : ''}`;
   pin.style.setProperty('--pin-color', color);
-  if (icon === 'pin') pin.append(document.createElement('i'));
-  else {
-    pin.style.borderRadius = '50%';
-    pin.style.transform = selected ? 'scale(1.24)' : 'none';
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('aria-hidden', 'true');
-    svg.dataset.markerIconGlyph = icon;
-    Object.assign(svg.style, { width: '16px', height: '16px', position: 'absolute', left: '2px', top: '2px' });
-    if (icon === 'circle') {
-      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      circle.setAttribute('cx', '12'); circle.setAttribute('cy', '12'); circle.setAttribute('r', '4'); circle.setAttribute('fill', '#fff');
-      svg.append(circle);
-    } else {
-      svg.setAttribute('fill', 'none');
-      svg.setAttribute('stroke', '#fff');
-      svg.setAttribute('stroke-width', '2');
-      svg.setAttribute('stroke-linecap', 'round');
-      svg.setAttribute('stroke-linejoin', 'round');
-      for (const pathValue of MARKER_ICON_PATHS[icon]) {
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('d', pathValue);
-        svg.append(path);
-      }
+  pin.style.borderRadius = '50%';
+  pin.style.transform = selected ? 'scale(1.24)' : 'none';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.dataset.markerIconGlyph = icon;
+  Object.assign(svg.style, { width: '16px', height: '16px', position: 'absolute', left: '2px', top: '2px' });
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.style.color = '#fff';
+  for (const [tag, attributes] of getMarkerIcon(icon).nodes) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [name, value] of Object.entries(attributes)) {
+      if (name === 'children') node.textContent = value;
+      else node.setAttribute(name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`), String(value));
     }
-    pin.append(svg);
+    svg.append(node);
   }
+  pin.append(svg);
   wrapper.append(pin);
   return wrapper;
 }
@@ -156,6 +147,25 @@ function numberedPinElement(color, index, active = false) {
   pin.append(label);
   wrapper.append(pin);
   return wrapper;
+}
+
+function lineArrowElement(featureId) {
+  const element = document.createElement('div');
+  element.className = 'map-line-direction-arrow';
+  element.dataset.featureId = String(featureId);
+  // AMap caches the center anchor from the content's initial dimensions.
+  // Keep that frame fixed while scaling only the glyph inside it.
+  Object.assign(element.style, { width: '72px', height: '72px' });
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '-36 -36 72 72');
+  svg.setAttribute('aria-hidden', 'true');
+  Object.assign(svg.style, { display: 'block', width: '100%', height: '100%', transformOrigin: 'center', overflow: 'visible' });
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  // Join the base to the endpoint; extend the tip outward along the last segment.
+  path.setAttribute('d', 'M 1 0 L 0 -0.45 L 0 0.45 Z');
+  svg.append(path);
+  element.append(svg);
+  return { element, svg, path };
 }
 
 function overlaySignature(feature, layer, selected) {
@@ -244,7 +254,7 @@ function updateFeatureOverlay(record, feature, layer, selected) {
 
 function buildController(AMap, map, registry, reportZoom, options = {}) {
   const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const motion = () => ({ immediately: Boolean(reducedMotion()), duration: reducedMotion() ? 0 : 350 });
+  const motion = () => ({ immediately: Boolean(reducedMotion()), duration: reducedMotion() ? 0 : 1000 });
   const beginMove = () => options.beforeMove?.();
   const paddedPan = (position, immediate = false) => {
     const { immediately, duration } = immediate ? { immediately: true, duration: 0 } : motion();
@@ -396,9 +406,11 @@ export default function AmapMap({
   thumbnail = false,
   activeTool = '',
   editable = false,
+  editingFeatureId = null,
   candidateColor = DEFAULT_CANDIDATE_COLOR,
   className = '',
   draftMarker = null,
+  draftFeature = null,
   draftPoints = [],
   hoverPoint = null,
   mapData,
@@ -420,6 +432,8 @@ export default function AmapMap({
   onFeatureGeometryChange,
   onMapClick,
   onMapDoubleClick,
+  onPolygonClose,
+  onShapeDrag,
   onMouseMove,
   onMoveEnd,
   onPopupClose,
@@ -447,7 +461,9 @@ export default function AmapMap({
   const editorRef = useRef(null);
   const editingIdRef = useRef(null);
   const dragListenersRef = useRef([]);
+  const cancelShapeDragRef = useRef(null);
   const overlayRegistryRef = useRef(new Map());
+  const lineArrowRegistryRef = useRef(new Map());
   const featureLookupRef = useRef(new Map());
   const draftOverlaysRef = useRef([]);
   const candidateOverlaysRef = useRef([]);
@@ -471,6 +487,8 @@ export default function AmapMap({
   const [controlError, setControlError] = useState('');
 
   callbacksRef.current = {
+    activeTool,
+    editable,
     onCandidateClick,
     onContextMenu,
     onPoiSelect,
@@ -484,6 +502,8 @@ export default function AmapMap({
     onFeatureGeometryChange,
     onMapClick,
     onMapDoubleClick,
+    onPolygonClose,
+    onShapeDrag,
     onMouseMove,
     onMoveEnd,
     onPopupClose,
@@ -492,6 +512,10 @@ export default function AmapMap({
   };
   mapDataRef.current = mapData;
   measurementPointsRef.current = measurementPoints;
+
+  useEffect(() => {
+    cancelShapeDragRef.current?.();
+  }, [activeTool, editable]);
 
   useEffect(() => {
     if (!AMAP_CONFIGURED || !surfaceRef.current || !shellRef.current) return undefined;
@@ -633,6 +657,7 @@ export default function AmapMap({
       map.on('moveend', () => { callbacksRef.current.onMoveEnd?.(controllerRef.current.getCenter(), map.getZoom()); reportView(); });
       map.on('dragstart', () => { viewSource = 'user'; });
       map.on('click', (event) => {
+        if (SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) return;
         if (Date.now() < suppressClickUntil || event?.originEvent?.target?.closest?.('.map-engine-handle')) return;
         callbacksRef.current.onMapClick?.(storagePoint(event.lnglat), event.originEvent || event.originalEvent);
       });
@@ -648,8 +673,8 @@ export default function AmapMap({
         suppressClickUntil = Date.now() + 150;
         callbacksRef.current.onPoiSelect?.({ id: poi.id || poi.poiid || '', name: poi.name || '', position: [point.lng, point.lat], nativePoi: poi });
       });
-      map.on('mousemove', (event) => callbacksRef.current.onMouseMove?.(storagePoint(event.lnglat)));
-      map.on('mouseout', () => callbacksRef.current.onMouseMove?.(null));
+      map.on('mousemove', (event) => { if (!SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(storagePoint(event.lnglat)); });
+      map.on('mouseout', () => { if (!SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(null); });
 
       // AMap stops emitting its map-level dblclick event when double-click zoom is
       // disabled. Listen on the native map surface so drawing can still finish
@@ -664,6 +689,42 @@ export default function AmapMap({
       surfaceRef.current.addEventListener('dblclick', surfaceDoubleClickHandler, true);
 
       const surface = surfaceRef.current;
+      let shapePointer = null;
+      let shapeTap = false;
+      let shapeDrag = null;
+      const surfacePoint = (event) => {
+        const rect = surface.getBoundingClientRect();
+        return storagePoint(map.containerToLngLat(new AMap.Pixel(event.clientX - rect.left, event.clientY - rect.top)));
+      };
+      const endShapeDrag = (event, cancelled = false) => {
+        if (!shapeDrag || (event?.pointerId != null && event.pointerId !== shapeDrag.id)) return;
+        const drag = shapeDrag;
+        shapeDrag = null;
+        shapePointer = null;
+        shapeTap = false;
+        touchPointers.delete(drag.id);
+        // Release before saving; the subsequent click must not select an overlay.
+        suppressClickUntil = Date.now() + 350;
+        if (surface.hasPointerCapture(drag.id)) surface.releasePointerCapture(drag.id);
+        const moved = event && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 6;
+        callbacksRef.current.onShapeDrag?.({
+          phase: cancelled || !moved ? 'cancel' : 'end',
+          tool: drag.tool, start: drag.start, position: event ? surfacePoint(event) : null,
+        });
+      };
+      const cancelShapeDrag = () => endShapeDrag(null, true);
+      cancelShapeDragRef.current = cancelShapeDrag;
+      const nativeShapeClick = (event) => {
+        if (callbacksRef.current.activeTool !== 'polygon' || event.target?.closest?.('.map-engine-handle, .amap-native-info-window')) return;
+        // A moving draft overlay may replace the SDK's mousedown hit target.
+        // Use the native tap to place a vertex, independent of that hit test.
+        event.stopPropagation();
+        if (!shapeTap || event.button !== 0 || Date.now() < suppressClickUntil) return;
+        shapeTap = false;
+        const rect = surface.getBoundingClientRect();
+        const position = map.containerToLngLat(new AMap.Pixel(event.clientX - rect.left, event.clientY - rect.top));
+        callbacksRef.current.onMapClick?.(storagePoint(position), event);
+      };
       const isInteractive = (event) => Boolean(event.target?.closest?.('.amap-native-info-window, .map-engine-handle, .custom-map-pin-wrap'));
       const contextAt = (clientX, clientY) => {
         const rect = surface.getBoundingClientRect();
@@ -678,11 +739,24 @@ export default function AmapMap({
       };
       const cancelPress = () => { window.clearTimeout(pressTimer); pressOrigin = null; };
       const pointerDown = (event) => {
+        shapeTap = false;
+        shapePointer = SHAPE_TOOLS.includes(callbacksRef.current.activeTool) && event.isPrimary !== false && event.button === 0 && !event.target?.closest?.('.map-engine-handle, .amap-native-info-window')
+          ? { x: event.clientX, y: event.clientY, id: event.pointerId, moved: false } : null;
         viewSource = 'user';
         cancelPress();
         pressHandled = false;
         if (event.pointerType === 'touch') touchPointers.add(event.pointerId);
-        if (touchPointers.size > 1) return;
+        if (touchPointers.size > 1) { cancelShapeDrag(); return; }
+        if (callbacksRef.current.editable && ['rectangle', 'circle'].includes(callbacksRef.current.activeTool)
+          && event.isPrimary !== false && event.button === 0 && !event.target?.closest?.('.map-engine-handle, .amap-native-info-window')) {
+          event.preventDefault();
+          event.stopPropagation();
+          shapePointer = null;
+          shapeDrag = { id: event.pointerId, x: event.clientX, y: event.clientY, start: surfacePoint(event), tool: callbacksRef.current.activeTool };
+          surface.setPointerCapture(event.pointerId);
+          callbacksRef.current.onShapeDrag?.({ phase: 'start', tool: shapeDrag.tool, start: shapeDrag.start, position: shapeDrag.start });
+          return;
+        }
         if (event.pointerType !== 'touch' || !callbacksRef.current.onContextMenu || isInteractive(event)) return;
         pressOrigin = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
         pressTimer = window.setTimeout(() => {
@@ -694,32 +768,69 @@ export default function AmapMap({
         }, 550);
       };
       const pointerMove = (event) => {
+        if (shapeDrag && event.pointerId === shapeDrag.id) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.buttons === 0) { cancelShapeDrag(); return; }
+          callbacksRef.current.onShapeDrag?.({ phase: 'move', tool: shapeDrag.tool, start: shapeDrag.start, position: surfacePoint(event) });
+          return;
+        }
+        if (shapePointer && Math.hypot(event.clientX - shapePointer.x, event.clientY - shapePointer.y) > 6) shapePointer.moved = true;
+        if (callbacksRef.current.activeTool === 'polygon' && event.pointerType !== 'touch' && !event.target?.closest?.('.amap-native-info-window')) {
+          const rect = surface.getBoundingClientRect();
+          const position = map.containerToLngLat(new AMap.Pixel(event.clientX - rect.left, event.clientY - rect.top));
+          callbacksRef.current.onMouseMove?.(storagePoint(position));
+        }
         if (pressOrigin && (event.pointerId !== pressOrigin.pointerId || Math.hypot(event.clientX - pressOrigin.x, event.clientY - pressOrigin.y) > 10)) cancelPress();
       };
-      const markUserMove = () => { viewSource = 'user'; cancelPress(); };
+      const markUserMove = () => { viewSource = 'user'; cancelPress(); cancelShapeDrag(); shapePointer = null; shapeTap = false; };
+      const pointerLeave = () => { if (!shapeDrag && SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(null); };
       const finishPress = (event) => {
+        if (shapeDrag && event.pointerId === shapeDrag.id) {
+          event.preventDefault();
+          event.stopPropagation();
+          endShapeDrag(event, event.type !== 'pointerup');
+          cancelPress();
+          return;
+        }
+        shapeTap = Boolean(shapePointer && shapePointer.id === event.pointerId && event.type === 'pointerup' && !shapePointer.moved && touchPointers.size <= 1 && Math.hypot(event.clientX - shapePointer.x, event.clientY - shapePointer.y) <= 6);
+        shapePointer = null;
         touchPointers.delete(event.pointerId);
         if (pressHandled) suppressClickUntil = Date.now() + 350;
         pressHandled = false;
         cancelPress();
       };
+      // Capture keeps release reliable even when the pointer leaves the map.
+      window.addEventListener('pointerup', finishPress, true);
+      window.addEventListener('pointercancel', finishPress, true);
+      window.addEventListener('blur', cancelShapeDrag);
+      surface.addEventListener('lostpointercapture', cancelShapeDrag);
       surface.addEventListener('contextmenu', handleContext, true);
+      surface.addEventListener('click', nativeShapeClick, true);
       surface.addEventListener('pointerdown', pointerDown, true);
       surface.addEventListener('pointermove', pointerMove, true);
-      surface.addEventListener('pointerup', finishPress, true);
-      surface.addEventListener('pointercancel', finishPress, true);
+      surface.addEventListener('pointerleave', pointerLeave);
       surface.addEventListener('wheel', markUserMove, { passive: true });
       const motionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)');
       const updateMotion = (event) => map.setStatus({ animateEnable: !event.matches });
       motionQuery?.addEventListener?.('change', updateMotion);
       removeSurfaceListeners = () => {
         cancelPress();
+        // Unmount only releases the gesture; there is no draft left to update.
+        const drag = shapeDrag;
+        shapeDrag = null;
+        if (drag && surface.hasPointerCapture(drag.id)) surface.releasePointerCapture(drag.id);
+        cancelShapeDragRef.current = null;
+        window.removeEventListener('pointerup', finishPress, true);
+        window.removeEventListener('pointercancel', finishPress, true);
+        window.removeEventListener('blur', cancelShapeDrag);
+        surface.removeEventListener('lostpointercapture', cancelShapeDrag);
         surface.removeEventListener('contextmenu', handleContext, true);
+        surface.removeEventListener('click', nativeShapeClick, true);
         surface.removeEventListener('pointerdown', pointerDown, true);
         surface.removeEventListener('pointermove', pointerMove, true);
+        surface.removeEventListener('pointerleave', pointerLeave);
         touchPointers.clear();
-        surface.removeEventListener('pointerup', finishPress, true);
-        surface.removeEventListener('pointercancel', finishPress, true);
         surface.removeEventListener('wheel', markUserMove);
         motionQuery?.removeEventListener?.('change', updateMotion);
       };
@@ -759,6 +870,7 @@ export default function AmapMap({
       controllerRef.current = null;
       amapRef.current = null;
       overlayRegistryRef.current.clear();
+      lineArrowRegistryRef.current.clear();
       featureLookupRef.current.clear();
       draftOverlaysRef.current = [];
       candidateOverlaysRef.current = [];
@@ -837,10 +949,16 @@ export default function AmapMap({
           tooltipRef.current.show();
         };
         const overlay = createFeatureOverlay(AMap, map, feature, layer, selected, {
-          click: () => {
+          click: (event) => {
+            if (SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) return;
             tooltipRef.current?.hide();
-            const latest = featureLookupRef.current.get(featureId);
-            if (latest) callbacksRef.current.onFeatureSelect?.(latest.feature, latest.layer);
+            const position = event?.lnglat ? storagePoint(event.lnglat) : null;
+            // Finish the SDK's native release before replacing marker content
+            // or opening a popup above its original mouse target.
+            window.requestAnimationFrame(() => {
+              const latest = featureLookupRef.current.get(featureId);
+              if (latest) callbacksRef.current.onFeatureSelect?.(latest.feature, latest.layer, position);
+            });
           },
           mouseover: showTooltip,
           mousemove: showTooltip,
@@ -861,7 +979,72 @@ export default function AmapMap({
     }
   }, [mapData, ready, selectedFeatureId]);
 
-  // Only the selected feature is editable. End events persist one WGS84
+  useEffect(() => {
+    if (!ready || !mapRef.current || !amapRef.current) return;
+    const map = mapRef.current;
+    const AMap = amapRef.current;
+    const registry = lineArrowRegistryRef.current;
+    const lines = mapData.layers.filter((layer) => layer.visible).flatMap((layer) => layer.features
+      .filter((feature) => feature.type === 'LineString' && styleNumber(feature, layer, 'arrowDirection', 0, -100, 100) !== 0
+        && styleNumber(feature, layer, 'weight', 5, 0, 48) > 0 && styleNumber(feature, layer, 'opacity', .92, 0, 1) > 0)
+      .map((feature) => ({ feature, layer, path: geometryDisplayPath(feature.geometry) })));
+    const visibleIds = new Set(lines.map(({ feature }) => feature.id));
+    for (const [id, record] of registry) {
+      if (visibleIds.has(id)) continue;
+      map.remove(record.marker);
+      registry.delete(id);
+    }
+    const update = () => {
+      for (const { feature, layer, path } of lines) {
+        const direction = styleNumber(feature, layer, 'arrowDirection', 0, -100, 100);
+        const pixels = path.map((point) => {
+          const pixel = map.lngLatToContainer(point);
+          return pixel ? [pixel.x, pixel.y] : null;
+        });
+        const layout = lineArrowLayout(pixels, direction);
+        let record = registry.get(feature.id);
+        if (!layout) { record?.marker.hide(); continue; }
+        if (!record) {
+          record = lineArrowElement(feature.id);
+          record.marker = new AMap.Marker({ content: record.element, position: layout.end === 'end' ? path.at(-1) : path[0], anchor: 'center', offset: new AMap.Pixel(0, 0), bubble: false, cursor: 'pointer' });
+          record.marker.on('click', (event) => {
+            if (SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) return;
+            tooltipRef.current?.hide();
+            const position = event?.lnglat ? storagePoint(event.lnglat) : null;
+            window.requestAnimationFrame(() => {
+              const latest = featureLookupRef.current.get(feature.id);
+              if (latest) callbacksRef.current.onFeatureSelect?.(latest.feature, latest.layer, position);
+            });
+          });
+          registry.set(feature.id, record);
+          map.add(record.marker);
+        }
+        record.element.style.opacity = String(styleNumber(feature, layer, 'opacity', .92, 0, 1));
+        record.element.dataset.direction = String(direction);
+        record.element.dataset.endpoint = layout.end;
+        record.element.dataset.arrowSize = String(layout.size);
+        record.svg.style.transform = `rotate(${layout.angle}deg)`;
+        record.path.setAttribute('transform', `scale(${layout.size})`);
+        record.path.setAttribute('fill', featureColor(feature, layer));
+        record.marker.setPosition(layout.end === 'end' ? path.at(-1) : path[0]);
+        record.marker.setTitle(feature.name);
+        record.marker.setzIndex(feature.id === selectedFeatureId ? 145 : 115);
+        record.marker.show();
+      }
+    };
+    let frame;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = null; update(); });
+    };
+    update();
+    const events = ['mapmove', 'zoomchange', 'resize'];
+    events.forEach((event) => map.on(event, schedule));
+    return () => { if (frame) cancelAnimationFrame(frame); events.forEach((event) => map.off(event, schedule)); };
+  }, [mapData, ready, selectedFeatureId]);
+
+  // Selection opens details; geometry editing requires an explicit action.
+  // End events persist one WGS84
   // geometry update, so moving a vertex never creates a stream of writes.
   const selectedGeometry = JSON.stringify(mapData.layers.flatMap((layer) => layer.visible ? layer.features : []).find((feature) => feature.id === selectedFeatureId)?.geometry);
   useEffect(() => {
@@ -871,7 +1054,7 @@ export default function AmapMap({
     for (const { overlay, handler } of dragListenersRef.current) overlay.off('dragend', handler);
     dragListenersRef.current = [];
     for (const record of overlayRegistryRef.current.values()) if (record.type === 'Point') record.overlay.setDraggable(false);
-    if (!ready || !editable || activeTool !== 'pan') return undefined;
+    if (!ready || !editable || activeTool !== 'pan' || editingFeatureId !== selectedFeatureId) return undefined;
     const record = overlayRegistryRef.current.get(selectedFeatureId);
     if (!record) return undefined;
     // Directions are edited by requesting a new official route through a stop.
@@ -925,7 +1108,7 @@ export default function AmapMap({
       editorRef.current = null;
       if (record.type === 'Point') { record.overlay.off('dragend', saveGeometry); record.overlay.setDraggable(false); }
     };
-  }, [activeTool, editable, ready, selectedFeatureId, selectedGeometry]);
+  }, [activeTool, editable, editingFeatureId, ready, selectedFeatureId, selectedGeometry]);
 
   // Search candidates render as numbered amber pins (1..N) so the user can
   // cross-reference them with the sequence strip under the search box. They
@@ -1021,7 +1204,6 @@ export default function AmapMap({
       if (path.length < 2) return;
       const overlay = new AMap.Polyline({ path, strokeColor: selected ? '#1a73e8' : '#a5abb4', strokeWeight: selected ? 7 : 6, strokeOpacity: selected ? .96 : .8, zIndex: selected ? 410 : 390, lineJoin: 'round', lineCap: 'round', cursor: 'pointer', bubble: false });
       if (clickable) overlay.on('click', (event) => {
-        event?.originEvent?.stopPropagation?.();
         callbacksRef.current.onRouteSelect?.(alternative.id);
       });
       overlays.push(overlay);
@@ -1056,14 +1238,14 @@ export default function AmapMap({
     // Planning a preview changes only temporary directions state. Read-only
     // map visitors may drag it; editing saved route features still needs access.
     if (routePlan?.geometry) addHandles(routePlan);
-    if (!routePlan?.geometry && editable && activeTool === 'pan' && savedRoute) addHandles({ geometry: savedRoute.feature.geometry, ...savedRoute.feature.style.routeData }, savedRoute);
+    if (!routePlan?.geometry && editable && activeTool === 'pan' && editingFeatureId === savedRoute?.feature.id && savedRoute) addHandles({ geometry: savedRoute.feature.geometry, ...savedRoute.feature.style.routeData }, savedRoute);
     if (overlays.length) map.add(overlays);
     routeOverlaysRef.current = overlays;
     return () => {
       if (mapRef.current && overlays.length) mapRef.current.remove(overlays);
       if (routeOverlaysRef.current === overlays) routeOverlaysRef.current = [];
     };
-  }, [routeSignature, ready, editable, activeTool, lang]);
+  }, [routeSignature, ready, editable, editingFeatureId, activeTool, lang]);
 
   useEffect(() => {
     if (!ready || !mapRef.current || !amapRef.current || !shellRef.current) return;
@@ -1071,17 +1253,32 @@ export default function AmapMap({
     const AMap = amapRef.current;
     if (draftOverlaysRef.current.length) map.remove(draftOverlaysRef.current);
     const overlays = [];
-    const draftColor = activeTool === 'route' ? '#1a73e8' : activeTool === 'polygon' ? '#00897b' : activeTool === 'measure' ? '#3c4043' : '#e85d4a';
+    const draftColor = activeTool === 'route' ? '#1a73e8' : SHAPE_TOOLS.includes(activeTool) ? '#00897b' : activeTool === 'measure' ? '#3c4043' : '#e85d4a';
     const livePoints = draftPoints.length && hoverPoint ? [...draftPoints, hoverPoint] : draftPoints;
-    const livePath = livePoints.map(displayPosition);
+    const shapeGeometry = draftShapeGeometry(activeTool, draftPoints, hoverPoint);
+    const livePath = (shapeGeometry?.coordinates[0] || livePoints).map(displayPosition);
 
     if (livePath.length >= 2) {
       overlays.push(new AMap.Polyline({ path: livePath, strokeColor: draftColor, strokeWeight: 4, strokeOpacity: 0.92, strokeStyle: 'dashed', lineJoin: 'round', lineCap: 'round', zIndex: 500, bubble: true, cursor: 'crosshair' }));
     }
-    if (activeTool === 'polygon' && livePath.length >= 3) {
+    if (shapeGeometry) {
       overlays.push(new AMap.Polygon({ path: livePath, strokeOpacity: 0, fillColor: '#4db6ac', fillOpacity: 0.16, zIndex: 490, bubble: true, cursor: 'crosshair' }));
     }
-    for (const point of draftPoints) {
+    if (activeTool === 'polygon' && draftPoints.length) {
+      const canClose = draftPoints.length >= 3;
+      const content = document.createElement('button');
+      content.type = 'button';
+      content.className = `map-engine-handle map-polygon-start${canClose ? ' can-close' : ''}`;
+      content.dataset.drawStart = 'true';
+      const label = canClose ? text('闭合图形', 'Close polygon') : text('绘制起点', 'Drawing start');
+      content.setAttribute('aria-label', label); content.title = label;
+      content.addEventListener('click', (event) => { event.stopPropagation(); if (canClose) callbacksRef.current.onPolygonClose?.(); });
+      const start = new AMap.Marker({ position: displayPosition(draftPoints[0]), anchor: 'center', content, zIndex: 540, bubble: false });
+      start.on('mouseover', () => callbacksRef.current.onMouseMove?.({ lng: draftPoints[0][0], lat: draftPoints[0][1] }));
+      overlays.push(start);
+    }
+    for (const [index, point] of draftPoints.entries()) {
+      if (activeTool === 'polygon' && index === 0) continue;
       overlays.push(new AMap.CircleMarker({ center: displayPosition(point), radius: 6, strokeColor: draftColor, strokeWeight: 2, fillColor: '#fff', fillOpacity: 1, zIndex: 520, bubble: true, cursor: 'crosshair' }));
     }
     if (draftPoints.length && hoverPoint) {
@@ -1093,18 +1290,24 @@ export default function AmapMap({
     if (draftMarker) {
       overlays.push(new AMap.Marker({ position: displayPosition(draftMarker.position), anchor: 'bottom-center', content: pinElement(draftMarker.color || DEFAULT_COLOR, true, false, draftMarker.icon || markerIcon), zIndex: 540, bubble: true }));
     }
+    if (draftFeature) {
+      const feature = { ...draftFeature, type: draftFeature.geometry.type };
+      const options = { ...overlayOptions(feature, { style: {} }, true), zIndex: 500, bubble: true, cursor: 'default' };
+      const preview = feature.type === 'LineString' ? new AMap.Polyline(options) : new AMap.Polygon(options);
+      overlays.push(preview);
+    }
     if (overlays.length) map.add(overlays);
     draftOverlaysRef.current = overlays;
     shellRef.current.dataset.drawTool = activeTool === 'pan' ? '' : activeTool;
     const drawing = activeTool && activeTool !== 'pan';
     map.setDefaultCursor(drawing ? 'crosshair' : 'grab');
-    map.setStatus({ dragEnable: true, doubleClickZoom: !drawing });
+    map.setStatus({ dragEnable: !['rectangle', 'circle'].includes(activeTool), doubleClickZoom: !drawing });
 
     return () => {
       if (mapRef.current && overlays.length) mapRef.current.remove(overlays);
       if (draftOverlaysRef.current === overlays) draftOverlaysRef.current = [];
     };
-  }, [activeTool, draftMarker, draftPoints, hoverPoint, markerColor, markerIcon, ready]);
+  }, [activeTool, draftMarker, draftFeature, draftPoints, hoverPoint, markerColor, markerIcon, ready, lang]);
 
   const popupLng = popup?.position?.[0];
   const popupLat = popup?.position?.[1];

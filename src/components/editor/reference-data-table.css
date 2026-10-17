@@ -1,0 +1,54 @@
+.reference-data-table-backdrop { background: transparent; }
+.modal-dialog.reference-data-table-dialog { width: min(var(--table-dialog-width, 520px), 100%); border: 1px solid #d2d2d2; border-radius: 2px; box-shadow: 0 2px 7px rgb(0 0 0 / 24%); }
+.reference-data-table-dialog > header { min-height: 38px; margin: 0 10px; padding: 0; border-bottom: 1px dotted #ddd; }
+.reference-data-table-dialog > header h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 500; }
+.reference-data-table-dialog > header > button { flex: 0 0 28px; width: 28px; height: 28px; color: #999; }
+.reference-table-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 10px; }
+.reference-table-toolbar input { width: 160px; min-width: 0; height: 29px; padding: 4px 6px; border: 1px solid #d0d0d0; border-radius: 0; background: #fff; color: #222; font-size: 14px; }
+.reference-table-toolbar input:focus { outline: 1px solid #4285f4; border-color: #4285f4; }
+.reference-table-toolbar > span { color: #222; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.reference-table-add-column { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; margin-left: auto; padding: 3px 8px; border: 1px solid #d6d6d6; border-radius: 2px; background: #fafafa; color: #555; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.reference-table-add-column:hover:not(:disabled) { background: #eee; border-color: #aaa; }
+.reference-table-add-column:disabled { color: #aaa; cursor: default; }
+.reference-table-column-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 10px 10px; }
+.reference-table-column-form input { flex: 1; min-width: 130px; height: 29px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 0; font-size: 13px; }
+.reference-table-column-form button { min-height: 28px; padding: 3px 10px; border: 1px solid #d6d6d6; border-radius: 2px; background: #fafafa; color: #555; font-size: 12px; }
+.reference-table-column-form p { width: 100%; margin: 0; color: #c5221f; font-size: 12px; }
+.reference-data-table-dialog .data-table-wrap { min-height: 0; max-height: min(360px, calc(100dvh - 230px)); margin: 0 10px; border: 1px solid #d4d4d4; }
+.reference-data-table-dialog .data-table { table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 14px; }
+.reference-table-index { width: 42px; }
+.reference-table-name { width: 66%; }
+.has-custom-columns .reference-table-name { width: 200px; }
+.has-custom-columns .reference-table-description { width: 230px; }
+.reference-table-custom { width: 160px; }
+.reference-data-table-dialog .data-table thead th { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-data-table-dialog .data-table th { height: 34px; padding: 0 8px; border: 0; border-right: 1px solid #d4d4d4; border-bottom: 1px solid #d4d4d4; background: #d8d8d8; color: #555; text-align: left; font-weight: 600; }
+.reference-data-table-dialog .data-table th:last-child { border-right: 0; }
+.reference-data-table-dialog .data-table thead th:first-child,
+.reference-data-table-dialog .data-table tbody th { background: #f1f1f1; text-align: center; font-weight: 400; }
+.reference-data-table-dialog .data-table tbody th { position: static; }
+.reference-data-table-dialog .data-table td { padding: 0; border: 0; border-right: 1px solid #d4d4d4; border-bottom: 1px solid #d4d4d4; background: #fff; vertical-align: top; }
+.reference-data-table-dialog .data-table td:last-child { border-right: 0; }
+.reference-data-table-dialog .data-table tbody tr:last-child > * { border-bottom: 0; }
+.reference-data-table-dialog .data-table tr.is-selected td { background: #edf3fe; }
+.reference-data-table-dialog .data-table tr.is-selected th { background: #d8d8d8; }
+.reference-table-cell { display: block; box-sizing: border-box; width: 100%; min-width: 0; height: 34px; min-height: 34px; margin: 0; padding: 6px 8px; overflow: auto; resize: none; border: 0; border-radius: 0; background: transparent; color: #202124; font-family: inherit; font-size: 14px; line-height: 22px; text-align: left; white-space: pre; cursor: text; }
+.reference-table-cell.is-active,
+.reference-table-cell:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #4d90fe; }
+.reference-table-cell.has-error { box-shadow: inset 0 0 0 2px #d93025; }
+.reference-table-save-state { margin: 0 0 8px; color: #777; font-size: 11px; line-height: 16px; }
+.reference-table-save-state.has-error { max-width: 350px; color: #c5221f; }
+.reference-table-save-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.reference-data-table-dialog .table-empty { padding: 30px 10px; font-size: 13px; }
+.reference-table-footer { display: flex; flex-shrink: 0; justify-content: space-between; align-items: flex-end; gap: 12px; padding: 10px; }
+.reference-table-details { margin: 0 0 7px; color: #888; font-size: 11px; line-height: 16px; }
+.reference-table-row-actions { display: flex; gap: 6px; }
+.reference-table-footer button { min-height: 28px; padding: 4px 10px; border: 1px solid #d6d6d6; border-radius: 2px; background: linear-gradient(#fafafa, #f1f1f1); color: #555; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.reference-table-footer button:hover:not(:disabled) { border-color: #aaa; background: #eee; }
+.reference-table-footer button:disabled { color: #bbb; cursor: default; }
+@media (max-width: 560px) {
+  .reference-table-toolbar { gap: 8px; }
+  .reference-table-toolbar input { width: 130px; }
+  .reference-data-table-dialog .data-table { min-width: 440px; }
+  .reference-table-footer { gap: 8px; }
+}

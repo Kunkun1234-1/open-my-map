@@ -1,10 +1,10 @@
 import UserAvatar from './UserAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, Camera, ChevronDown, ChevronRight, CircleHelp, Database, Download, Eye, GitFork,
+  ArrowLeft, Check, LoaderCircle, Camera, ChevronDown, ChevronRight, CircleHelp, Database, Download, Eye,
   GripVertical, Hand, Layers, Link2, List, LocateFixed, MapPin, Menu, MoreVertical,
   MousePointer2, PaintBucket, Palette, Pencil, Plus, Redo2, Route, Ruler, Search, Share2,
-  Shapes, Table2, Trash2, Undo2, Upload, Video, X, ZoomIn, ZoomOut, Maximize, Minimize, Car, Bike, Footprints,
+  Shapes, Table2, Trash2, Undo2, Upload, Video, X, ZoomIn, ZoomOut, Maximize, Minimize, Car, Bike, Footprints, Waypoints,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { navigate } from '../App.jsx';
@@ -25,6 +25,7 @@ import {
 } from '../utils.js';
 import './editor.css';
 import DirectionsPanel from './editor/DirectionsPanel.jsx';
+import { geometryCoordinates } from './map-engine-utils.js';
 import SearchResultsPanel from './editor/SearchResultsPanel.jsx';
 import SearchPlaceCard from './editor/SearchPlaceCard.jsx';
 import BaseMapPicker from './editor/BaseMapPicker.jsx';
@@ -32,6 +33,14 @@ import LayerPanel from './editor/LayerPanel.jsx';
 import LayerStyleDialog from './editor/LayerStyleDialog.jsx';
 import MobileSheet from './editor/MobileSheet.jsx';
 import MeasurePanel from './editor/MeasurePanel.jsx';
+import FeatureCard, { COLORS } from './editor/FeatureCard.jsx';
+import MarkerStyleDialog from './editor/MarkerStyleDialog.jsx';
+import MarkerStylePopover from './editor/MarkerStylePopover.jsx';
+import MarkerIcon from './editor/MarkerIcon.jsx';
+import { getMarkerIcon } from './marker-icons.js';
+import ShapeToolMenu from './editor/ShapeToolMenu.jsx';
+import GeometryStyleFields, { geometryStyleValues } from './editor/GeometryStyleFields.jsx';
+import { SHAPE_TOOLS, rectangleGeometry, circleGeometry, polygonGeometry } from './editor/shape-drawing.js';
 import ContextMenu from './editor/ContextMenu.jsx';
 import useDirections from './editor/useDirections.js';
 import usePlaceSearch from './editor/usePlaceSearch.js';
@@ -39,8 +48,10 @@ import useEditorHistory from './editor/useEditorHistory.js';
 import { measurementDistance, measurementArea } from './editor/measurement.js';
 import './editor/editor-enhancements.css';
 import './editor/my-maps-editor.css';
-
-const COLORS = ['#1a73e8', '#00897b', '#8e24aa', '#e85d4a', '#f9ab00', '#d93025', '#5f6368', '#039be5'];
+import './editor/reference-sidebar.css';
+import './editor/reference-data-table.css';
+import { createTableAutosave } from './editor/table-autosave.js';
+import { tableFieldValue, tableCustomFieldId } from '../table-data.js';
 
 function attachmentsForFeature(mapData, featureId) {
   return mapData.layers.flatMap((layer) => layer.features).find((feature) => feature.id === featureId)?.attachments || [];
@@ -54,12 +65,12 @@ function compactDraftPoints(points) {
   });
 }
 
-function Modal({ title, children, onClose, size = 'normal' }) {
+function Modal({ title, children, onClose, size = 'normal', className = '', backdropClassName = '', onKeyDown, style, closeDisabled = false }) {
   const { t } = useI18n();
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className={`modal-dialog ${size}`} role="dialog" aria-modal="true" aria-label={title}>
-        <header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label={t('common.close')}><X size={20} /></button></header>
+    <div className={`modal-backdrop ${backdropClassName}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className={`modal-dialog ${size} ${className}`} role="dialog" aria-modal="true" aria-label={title} onKeyDown={onKeyDown} style={style}>
+        <header><h2>{title}</h2><button className="icon-button" disabled={closeDisabled} onClick={onClose} aria-label={t('common.close')}><X size={20} /></button></header>
         {children}
       </section>
     </div>
@@ -67,9 +78,16 @@ function Modal({ title, children, onClose, size = 'normal' }) {
 }
 
 function FeatureDialog({ feature, layers, defaultLayerId, onSave, onDelete, onUploadAttachments, onDeleteAttachment, onClose }) {
+  const { lang } = useI18n();
+  const [icon, setIcon] = useState(feature?.style?.icon);
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [name, setName] = useState(feature?.name || '新地点');
   const [description, setDescription] = useState(feature?.description || '');
   const [layerId, setLayerId] = useState(feature?.layerId || defaultLayerId);
+  const displayIcon = getMarkerIcon(icon || layers.find((layer) => layer.id === Number(layerId))?.style?.icon).id;
+  const geometryType = feature?.geometry?.type || feature?.type || 'Point';
+  const [geometryStyleChanges, setGeometryStyleChanges] = useState({});
+  const geometryStyle = geometryStyleValues(geometryType, { ...feature?.style, ...geometryStyleChanges }, layers.find((layer) => layer.id === Number(layerId))?.style);
   const [color, setColor] = useState(feature?.style?.color || '#1a73e8');
   const [attachments, setAttachments] = useState(feature?.attachments || []);
   const [pendingFiles, setPendingFiles] = useState([]);
@@ -116,12 +134,14 @@ function FeatureDialog({ feature, layers, defaultLayerId, onSave, onDelete, onUp
     <Modal title={feature?.id ? '编辑要素' : '添加到地图'} onClose={onClose}>
       <form className="dialog-form" onSubmit={(event) => {
         event.preventDefault();
-        onSave({ ...feature, name: name.trim() || '无标题要素', description, layerId: Number(layerId), style: { ...(feature?.style || {}), color, fillColor: color }, pendingFiles });
+        onSave({ ...feature, name: name.trim() || '无标题要素', description, layerId: Number(layerId), style: { ...(feature?.style || {}), ...(geometryType === 'Point' ? { color, fillColor: color, ...(icon ? { icon } : {}) } : geometryStyleChanges) }, pendingFiles });
       }}>
         <label>名称<input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label>说明<textarea rows="3" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
         <label>保存到图层<select value={layerId} onChange={(event) => setLayerId(event.target.value)}>{layers.map((layer) => <option key={layer.id} value={layer.id}>{layer.name}</option>)}</select></label>
-        <fieldset className="color-field"><legend>颜色</legend><div className="color-row">{COLORS.map((item) => <button key={item} type="button" className={color === item ? 'color-chip active' : 'color-chip'} style={{ '--color': item }} onClick={() => setColor(item)} aria-label={`颜色 ${item}`} />)}</div></fieldset>
+        {geometryType !== 'Point' ? <GeometryStyleFields type={geometryType} value={geometryStyle} onChange={(patch) => setGeometryStyleChanges((current) => ({ ...current, ...patch }))} lang={lang} /> : <fieldset className="color-field"><legend>颜色</legend><div className="color-row">{COLORS.map((item) => <button key={item} type="button" className={color === item ? 'color-chip active' : 'color-chip'} style={{ '--color': item }} onClick={() => setColor(item)} aria-label={`颜色 ${item}`} />)}</div></fieldset>}
+        {feature?.geometry?.type === 'Point' ? <button type="button" className="marker-picker-trigger" onClick={() => setIconPickerOpen(true)}><MarkerIcon icon={displayIcon} />{getMarkerIcon(displayIcon).labelZh} · 选择图标</button> : null}
+        {iconPickerOpen ? <MarkerStyleDialog name={name} icon={displayIcon} inheritIcon={!icon} color={color} lang={lang} onSave={(style) => { if (style.icon) setIcon(style.icon); setColor(style.color); }} onClose={() => setIconPickerOpen(false)} /> : null}
         <section className="feature-media-manager" aria-label="图片与视频附件">
           <header>
             <div><b>图片与视频</b><span>{attachments.length + pendingFiles.length}/{MAX_ATTACHMENTS_PER_FEATURE}</span></div>
@@ -143,6 +163,39 @@ function FeatureDialog({ feature, layers, defaultLayerId, onSave, onDelete, onUp
   );
 }
 
+function LayerNameDialog({ layer, onSave, onClose }) {
+  const { lang } = useI18n();
+  const text = (zh, en) => lang === 'en' ? en : zh;
+  const [name, setName] = useState(layer?.name || text('无标题图层', 'Untitled layer'));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const pendingRef = useRef(false);
+  const inputRef = useRef(null);
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select(); }, []);
+  const close = () => { if (!pendingRef.current) onClose(); };
+  const submit = async (event) => {
+    event.preventDefault();
+    if (pendingRef.current || !name.trim()) return;
+    pendingRef.current = true; setBusy(true); setError('');
+    try { await onSave(name.trim()); }
+    catch (requestError) { setError(requestError.message); }
+    finally { pendingRef.current = false; setBusy(false); }
+  };
+  return <Modal title={layer ? text('重命名图层', 'Rename layer') : text('添加图层', 'Add layer')} onClose={close} closeDisabled={busy} style={{ width: 'min(360px, 100%)' }} onKeyDown={(event) => {
+    event.stopPropagation();
+    if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); close(); }
+  }}>
+    <form className="dialog-form" onSubmit={submit}>
+      <label>{text('图层名称', 'Layer name')}<input ref={inputRef} value={name} onChange={(event) => setName(event.target.value)} maxLength={180} required disabled={busy} /></label>
+      {error ? <p className="feature-media-error" role="alert">{error}</p> : null}
+      <footer className="dialog-actions"><span /><div>
+        <button type="button" className="text-button" disabled={busy} onClick={close}>{text('取消', 'Cancel')}</button>
+        <button type="submit" className="primary-button" disabled={busy || !name.trim()}>{busy ? text('保存中…', 'Saving…') : text('保存', 'Save')}</button>
+      </div></footer>
+    </form>
+  </Modal>;
+}
+
 function ShareDialog({ map, share, onGenerate, onClose }) {
   const { t } = useI18n();
   const link = share ? `${window.location.origin}/view/${share.token}` : '';
@@ -157,26 +210,173 @@ function ShareDialog({ map, share, onGenerate, onClose }) {
   );
 }
 
-function DataTableDialog({ layer, canEdit, onEdit, onDelete, onClose }) {
+function DataTableDialog({ layer, canEdit, busy, onSave, onAddColumn, onDelete, onClose }) {
+  const { lang } = useI18n();
+  const text = (zh, en) => lang === 'en' ? en : zh;
+  const [query, setQuery] = useState('');
+  const [selection, setSelection] = useState({ featureId: layer.features[0]?.id, column: 'name' });
+  const [focusedFeatureId, setFocusedFeatureId] = useState(null);
+  const [saveState, setSaveState] = useState({ fields: [], dirty: false, pending: false, error: '' });
+  const [addingColumn, setAddingColumn] = useState(false);
+  const [columnName, setColumnName] = useState('');
+  const [columnError, setColumnError] = useState('');
+  const [columnBusy, setColumnBusy] = useState(false);
+  const firstCellRef = useRef(null);
+  const searchRef = useRef(null);
+  const columnNameRef = useRef(null);
+  const autosaveRef = useRef(null);
+  const closingRef = useRef(false);
+  const composingRef = useRef(false);
+  const latestRef = useRef({ layer, onSave });
+  latestRef.current = { layer, onSave };
+  useEffect(() => {
+    let active = true;
+    const autosave = createTableAutosave({
+      save: (patch) => latestRef.current.onSave(patch),
+      onChange: (next) => { if (active) setSaveState(next); },
+    });
+    autosaveRef.current = autosave;
+    autosave.sync(latestRef.current.layer.features);
+    (firstCellRef.current || searchRef.current)?.focus();
+    return () => { active = false; autosave.dispose(); };
+  }, []);
+  useEffect(() => { autosaveRef.current?.sync(layer.features); }, [layer.features]);
+  useEffect(() => { if (addingColumn) columnNameRef.current?.focus(); }, [addingColumn]);
+  const customColumns = layer.columns || [];
+  const columns = [
+    { field: 'name', label: text('名称', 'Name') },
+    { field: 'description', label: text('说明', 'Description') },
+    ...customColumns.map((column) => ({ field: `data:${column.id}`, label: column.name })),
+  ];
+  const drafts = new Map(saveState.fields.map((item) => [`${item.featureId}:${item.field}`, item]));
+  const read = (feature, field) => drafts.get(`${feature.id}:${field}`)?.value ?? tableFieldValue(feature, field);
+  const needle = query.trim().toLocaleLowerCase();
+  const rows = layer.features.filter((feature) => feature.id === focusedFeatureId || !needle || columns.map(({ field }) => read(feature, field)).join(' ').toLocaleLowerCase().includes(needle));
+  const activeCell = rows.some((feature) => feature.id === selection.featureId) ? selection : { featureId: rows[0]?.id, column: 'name' };
+  const selectedFeature = rows.find((feature) => feature.id === activeCell.featureId);
+  const featureDetails = selectedFeature ? [
+    selectedFeature.type === 'Point' ? text('地点', 'Point') : selectedFeature.type === 'Polygon' ? text('区域', 'Polygon') : text('线条', 'Line'),
+    selectedFeature.type === 'Point'
+      ? selectedFeature.geometry.coordinates.map((value) => Number(value).toFixed(4)).join(', ')
+      : text(`${selectedFeature.geometry.coordinates.flat(2).length / 2} 个节点`, `${selectedFeature.geometry.coordinates.flat(2).length / 2} vertices`),
+  ].join(' · ') : '';
+  const changeCell = (feature, field, value, defer = false) => {
+    if (canEdit) autosaveRef.current?.change(feature.id, field, value, tableFieldValue(feature, field), { defer });
+  };
+  const requestClose = async () => {
+    if (closingRef.current || columnBusy) return;
+    closingRef.current = true;
+    try { if (await autosaveRef.current.flush()) onClose(); }
+    finally { closingRef.current = false; }
+  };
+  const exportTable = async () => {
+    const autosave = autosaveRef.current;
+    if (!await autosave.flush()) return;
+    const current = latestRef.current.layer;
+    exportCsv({ ...current, features: current.features.map((feature) => ({ ...feature,
+      name: autosave.read(feature.id, 'name', feature.name),
+      description: autosave.read(feature.id, 'description', feature.description),
+      properties: Object.fromEntries((current.columns || []).map((column) => [column.id, autosave.read(feature.id, `data:${column.id}`, tableFieldValue(feature, `data:${column.id}`))])),
+    })) });
+  };
+  const beginAddColumn = async () => {
+    if (!await autosaveRef.current.flush()) return;
+    setColumnError(''); setColumnName(''); setAddingColumn(true);
+  };
+  const addColumn = async (event) => {
+    event.preventDefault();
+    if (columnBusy || !columnName.trim()) return;
+    setColumnBusy(true); setColumnError('');
+    try { await onAddColumn(columnName.trim()); setAddingColumn(false); }
+    catch (error) { setColumnError(error.message); }
+    finally { setColumnBusy(false); }
+  };
+  const saveLabel = saveState.error ? saveState.error
+    : saveState.pending ? text('正在保存…', 'Saving…')
+      : saveState.dirty ? text('等待保存…', 'Waiting to save…')
+        : saveState.fields.length ? text('已自动保存', 'Saved automatically') : text('修改后自动保存', 'Changes save automatically');
   return (
-    <Modal title={`${layer.name} · 数据表`} onClose={onClose} size="wide">
-      <div className="data-table-wrap">
-        <table className="data-table"><thead><tr><th>名称</th><th>类型</th><th>说明</th><th>坐标/节点</th>{canEdit ? <th>操作</th> : null}</tr></thead>
-          <tbody>{layer.features.map((feature) => <tr key={feature.id}><td><span className="table-color-dot" style={{ background: feature.style.color || '#1a73e8' }} />{feature.name}</td><td>{feature.type}</td><td>{feature.description || '—'}</td><td>{feature.type === 'Point' ? feature.geometry.coordinates.map((value) => Number(value).toFixed(4)).join(', ') : `${feature.geometry.coordinates.flat(2).length / 2} 个节点`}</td>{canEdit ? <td><button className="table-action" onClick={() => onEdit(feature)}>编辑</button><button className="table-action danger" onClick={() => onDelete(feature)}>删除</button></td> : null}</tr>)}</tbody>
-        </table>
-        {layer.features.length === 0 ? <div className="table-empty">此图层还没有数据。</div> : null}
+    <Modal title={layer.name} onClose={requestClose} closeDisabled={columnBusy} className={`reference-data-table-dialog${customColumns.length ? ' has-custom-columns' : ''}`} style={{ '--table-dialog-width': `${Math.min(900, 520 + customColumns.length * 160)}px` }} backdropClassName="reference-data-table-backdrop" onKeyDown={(event) => {
+      if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
+        event.preventDefault(); event.stopPropagation();
+        if (addingColumn) { if (!columnBusy) setAddingColumn(false); }
+        else requestClose();
+      }
+    }}>
+      <div className="reference-table-toolbar">
+        <input ref={searchRef} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text('在表格中查找', 'Find in table')} aria-label={text('在表格中查找', 'Find in table')} />
+        {canEdit ? <button type="button" className="reference-table-add-column" disabled={columnBusy || addingColumn || customColumns.length >= 50} onClick={beginAddColumn}><Plus size={14} />{text('添加列', 'Add column')}</button> : null}
+        <span role="status" title={text(`图层共 ${layer.features.length} 个要素`, `${layer.features.length} features in this layer`)}>{rows.length ? `1–${rows.length}` : '0'} / {rows.length}</span>
       </div>
-      <footer className="modal-footer"><span>{layer.features.length} 个要素</span><div><button className="secondary-button" onClick={() => exportCsv(layer)}>导出 CSV</button><button className="primary-button" onClick={onClose}>完成</button></div></footer>
+      {addingColumn ? <form className="reference-table-column-form" onSubmit={addColumn}>
+        <input ref={columnNameRef} aria-label={text('列名', 'Column name')} placeholder={text('列名，例如：负责人', 'Column name, e.g. Owner')} maxLength={80} required value={columnName} disabled={columnBusy} onChange={(event) => setColumnName(event.target.value)} />
+        <button type="submit" disabled={columnBusy || !columnName.trim()}>{columnBusy ? text('添加中…', 'Adding…') : text('添加', 'Add')}</button>
+        <button type="button" disabled={columnBusy} onClick={() => setAddingColumn(false)}>{text('取消', 'Cancel')}</button>
+        {columnError ? <p role="alert">{columnError}</p> : null}
+      </form> : null}
+      <div className="data-table-wrap">
+        <table className="data-table" style={customColumns.length ? { minWidth: `${472 + customColumns.length * 160}px` } : undefined} aria-label={text(`${layer.name} 数据表`, `${layer.name} data table`)}>
+          <colgroup><col className="reference-table-index" /><col className="reference-table-name" /><col className="reference-table-description" />{customColumns.map((column) => <col key={column.id} className="reference-table-custom" />)}</colgroup>
+          <thead><tr><th scope="col"><span className="visually-hidden">{text('行号', 'Row')}</span></th>{columns.map((column) => <th key={column.field} scope="col" title={column.label}>{column.label}</th>)}</tr></thead>
+          <tbody>{rows.map((feature, index) => <tr key={feature.id} className={activeCell.featureId === feature.id ? 'is-selected' : ''}>
+            <th scope="row">{index + 1}</th>
+            {columns.map(({ field: column, label }) => {
+              const Cell = column === 'name' ? 'input' : 'textarea';
+              const field = drafts.get(`${feature.id}:${column}`);
+              return <td key={column}>
+                <Cell ref={index === 0 && column === 'name' ? firstCellRef : undefined}
+                  className={`reference-table-cell${activeCell.featureId === feature.id && activeCell.column === column ? ' is-active' : ''}${field?.error ? ' has-error' : ''}`}
+                  value={read(feature, column)} readOnly={!canEdit || columnBusy} rows={column !== 'name' ? 1 : undefined}
+                  aria-label={`${feature.name} · ${label}`}
+                  aria-invalid={Boolean(field?.error)} title={read(feature, column)}
+                  onFocus={() => { setSelection({ featureId: feature.id, column }); setFocusedFeatureId(feature.id); }}
+                  onChange={(event) => changeCell(feature, column, event.target.value, composingRef.current || event.nativeEvent.isComposing)}
+                  onCompositionStart={() => { composingRef.current = true; }}
+                  onCompositionEnd={(event) => { composingRef.current = false; changeCell(feature, column, event.currentTarget.value); }}
+                  onBlur={(event) => {
+                    const autosave = autosaveRef.current;
+                    const wasComposing = composingRef.current;
+                    composingRef.current = false;
+                    if (wasComposing || event.currentTarget.value !== autosave.read(feature.id, column, tableFieldValue(feature, column))) changeCell(feature, column, event.currentTarget.value);
+                    setFocusedFeatureId(null);
+                    // A failed draft waits for an explicit retry; merely moving
+                    // focus to its recovery controls must not start another save.
+                    if (!autosave.snapshot().error) autosave.flush();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey && !composingRef.current && !event.nativeEvent.isComposing) {
+                      event.preventDefault(); event.currentTarget.blur();
+                    }
+                  }} />
+              </td>;
+            })}
+          </tr>)}</tbody>
+        </table>
+        {rows.length === 0 ? <div className="table-empty">{layer.features.length ? text('没有匹配的要素。', 'No matching features.') : text('此图层还没有数据。', 'This layer has no data yet.')}</div> : null}
+      </div>
+      <footer className="reference-table-footer">
+        <div>
+          {selectedFeature ? <p className="reference-table-details">{featureDetails}</p> : null}
+          {canEdit || saveState.dirty || saveState.error ? <div className={`reference-table-save-state${saveState.error ? ' has-error' : ''}`} role="status">
+            {saveLabel}{saveState.error ? <div className="reference-table-save-actions">
+              <button type="button" disabled={saveState.pending} onMouseDown={(event) => event.preventDefault()} onClick={() => autosaveRef.current.flush()}>{text('重试', 'Retry')}</button>
+              <button type="button" disabled={saveState.pending} onMouseDown={(event) => event.preventDefault()} onClick={() => { if (autosaveRef.current.discard()) onClose(); }}>{text('放弃未保存修改并关闭', 'Discard unsaved changes and close')}</button>
+            </div> : null}
+          </div> : null}
+          {canEdit ? <button type="button" disabled={!selectedFeature || busy || saveState.pending || saveState.dirty} onClick={() => onDelete(selectedFeature)}>{text('删除', 'Delete')}</button> : null}
+        </div>
+        <button type="button" disabled={columnBusy} onClick={exportTable}>{text('导出 CSV', 'Export CSV')}</button>
+      </footer>
     </Modal>
   );
 }
 
 function DrawingToolbar({ activeTool, onTool, canUndo, canRedo, onUndo, onRedo, canEdit = true }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const tools = [
     ['pan', t('editor.toolPan'), Hand],
     ['marker', t('editor.toolMarker'), MapPin],
-    ['line', t('editor.toolLine'), Route],
+    ['line', t('editor.toolLine'), Waypoints],
     ['polygon', t('editor.toolPolygon'), Shapes],
     ['route', t('editor.toolRoute'), Route],
     ['measure', t('editor.toolMeasure'), Ruler],
@@ -187,6 +387,7 @@ function DrawingToolbar({ activeTool, onTool, canUndo, canRedo, onUndo, onRedo, 
       <button className="tool-button" disabled={!canRedo} onClick={onRedo} aria-label={t('editor.redo')}><Redo2 size={17} /></button>
       <span className="tool-divider" />
       {tools.map(([key, label, Icon]) => {
+        if (key === 'polygon') return <ShapeToolMenu key={key} activeTool={activeTool} onTool={onTool} disabled={!canEdit} lang={lang} />;
         const writeTool = !['pan', 'measure', 'route'].includes(key);
         return (
           <button
@@ -205,13 +406,19 @@ function DrawingToolbar({ activeTool, onTool, canUndo, canRedo, onUndo, onRedo, 
   );
 }
 
-function DraftPointCard({ feature, onSave, onCancel }) {
-  const [name, setName] = useState(feature.name || '新地点');
+function DraftFeatureCard({ feature, onSave, onCancel }) {
+  const isPoint = feature.geometry.type === 'Point';
+  const [name, setName] = useState(feature.name || (isPoint ? '新地点' : '新要素'));
   const [description, setDescription] = useState(feature.description || '');
   const [pendingFiles, setPendingFiles] = useState([]);
   const [mediaError, setMediaError] = useState('');
   const [saveBusy, setSaveBusy] = useState(false);
   const mediaInputRef = useRef(null);
+  const nameInputRef = useRef(null);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => nameInputRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
 
   const handleMediaSelection = (event) => {
     const selectedFiles = Array.from(event.target.files || []);
@@ -221,7 +428,7 @@ function DraftPointCard({ feature, onSave, onCancel }) {
       setMediaError('');
       const files = validateMediaSelection(selectedFiles, pendingFiles.length);
       if (pendingFiles.length + files.length > MAX_FILES_PER_UPLOAD) {
-        throw new Error(`新地点保存前最多选择 ${MAX_FILES_PER_UPLOAD} 个文件`);
+        throw new Error(`保存前最多选择 ${MAX_FILES_PER_UPLOAD} 个文件`);
       }
       setPendingFiles((current) => [...current, ...files]);
     } catch (selectionError) {
@@ -235,7 +442,7 @@ function DraftPointCard({ feature, onSave, onCancel }) {
     setSaveBusy(true);
     const saved = await onSave({
       ...feature,
-      name: name.trim() || '无标题地点',
+      name: name.trim() || (isPoint ? '无标题地点' : '无标题要素'),
       description,
       pendingFiles,
     });
@@ -245,32 +452,33 @@ function DraftPointCard({ feature, onSave, onCancel }) {
   return (
     <article
       className="my-maps-place-card draft-point-card"
-      aria-label="添加地点"
+      aria-label={isPoint ? '添加地点' : '添加要素'}
       onClickCapture={(event) => { event.nativeEvent.openMyMapCardInteraction = true; }}
+      onKeyDown={(event) => { if (event.key === 'Escape' && !event.nativeEvent.isComposing && !saveBusy) { event.preventDefault(); event.stopPropagation(); onCancel(); } }}
     >
       <form className="place-card-edit-form" onSubmit={submit}>
         <div className="place-card-edit-fields">
-          <input autoFocus value={name} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setName(event.target.value)} aria-label="地点名称" />
-          <textarea rows="2" value={description} onChange={(event) => setDescription(event.target.value)} aria-label="地点说明" placeholder="添加说明" />
+          <input ref={nameInputRef} disabled={saveBusy} value={name} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setName(event.target.value)} aria-label={isPoint ? '地点名称' : '要素名称'} />
+          <textarea rows="2" disabled={saveBusy} value={description} onChange={(event) => setDescription(event.target.value)} aria-label={isPoint ? '地点说明' : '要素说明'} placeholder="添加说明" />
           {mediaError ? <p role="alert">{mediaError}</p> : null}
         </div>
-        <button type="button" className="place-card-close" onClick={onCancel} aria-label="取消添加地点" title="取消"><X size={21} /></button>
+        <button type="button" className="place-card-close" disabled={saveBusy} onClick={onCancel} aria-label={isPoint ? '取消添加地点' : '取消添加要素'} title="取消"><X size={21} /></button>
         {pendingFiles.length ? (
           <div className="draft-point-pending" aria-label="待上传资料">
             {pendingFiles.map((file) => (
               <span key={`${file.name}-${file.size}-${file.lastModified}`}>
                 <span title={file.name}>{file.name}</span>
-                <button type="button" onClick={() => setPendingFiles((files) => files.filter((item) => item !== file))} aria-label={`移除待上传文件 ${file.name}`}><X size={13} /></button>
+                <button type="button" disabled={saveBusy} onClick={() => setPendingFiles((files) => files.filter((item) => item !== file))} aria-label={`移除待上传文件 ${file.name}`}><X size={13} /></button>
               </span>
             ))}
           </div>
         ) : null}
         <footer className="draft-point-actions">
-          <button type="button" className="draft-point-media-button" onClick={() => mediaInputRef.current?.click()} disabled={pendingFiles.length >= MAX_FILES_PER_UPLOAD}>
+          <button type="button" className="draft-point-media-button" onClick={() => mediaInputRef.current?.click()} disabled={saveBusy || pendingFiles.length >= MAX_FILES_PER_UPLOAD}>
             <Camera size={17} /><span>{pendingFiles.length ? `${pendingFiles.length} 个资料` : '添加图片或视频'}</span>
           </button>
           <div>
-            <button type="button" onClick={onCancel}>取消</button>
+            <button type="button" disabled={saveBusy} onClick={onCancel}>取消</button>
             <button type="submit" className="save" disabled={saveBusy}>{saveBusy ? '保存中…' : '保存'}</button>
           </div>
         </footer>
@@ -280,200 +488,6 @@ function DraftPointCard({ feature, onSave, onCancel }) {
   );
 }
 
-function FeatureStylePopover({ feature, layers, defaultLayerId, attachments, onSave, onDelete, onUploadAttachments, onDeleteAttachment }) {
-  const [name, setName] = useState(feature.name || '');
-  const [description, setDescription] = useState(feature.description || '');
-  const [layerId, setLayerId] = useState(feature.layerId || defaultLayerId);
-  const [color, setColor] = useState(feature.style?.color || '#1a73e8');
-  const [busy, setBusy] = useState(false);
-  const [mediaBusy, setMediaBusy] = useState(false);
-  const [error, setError] = useState('');
-  const mediaInputRef = useRef(null);
-
-  const currentAttachments = attachments || [];
-
-  const handleMedia = async (event) => {
-    const files = Array.from(event.target.files || []);
-    event.target.value = '';
-    if (!files.length) return;
-    try {
-      setError('');
-      const validated = validateMediaSelection(files, currentAttachments.length);
-      if (currentAttachments.length + validated.length > MAX_ATTACHMENTS_PER_FEATURE) {
-        throw new Error(`每个地点最多保存 ${MAX_ATTACHMENTS_PER_FEATURE} 个附件`);
-      }
-      setMediaBusy(true);
-      await onUploadAttachments(feature.id, validated);
-    } catch (mediaError) {
-      setError(mediaError.message);
-    } finally {
-      setMediaBusy(false);
-    }
-  };
-
-  const removeAttachment = async (attachment) => {
-    if (!window.confirm(`删除附件“${attachment.original_name}”？`)) return;
-    try { setError(''); await onDeleteAttachment(attachment.id, feature.id); }
-    catch (deleteError) { setError(deleteError.message); }
-  };
-
-  const submit = async (event) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    try {
-      await onSave({ ...feature, name: name.trim() || '无标题要素', description, layerId: Number(layerId), style: { ...(feature.style || {}), color, fillColor: color } });
-    } catch (saveError) {
-      setError(saveError.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (busy) return;
-    if (!window.confirm(`删除“${feature.name}”？`)) return;
-    setBusy(true);
-    try { await onDelete(feature); } catch (deleteError) { setError(deleteError.message); } finally { setBusy(false); }
-  };
-
-  return (
-    <form className="feature-style-popover" onSubmit={submit} onClick={(event) => event.stopPropagation()}>
-      <input className="fsp-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="名称" aria-label="名称" />
-      <textarea className="fsp-desc" rows={2} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明" aria-label="说明" />
-      <label className="fsp-layer">
-        <span>图层</span>
-        <select value={layerId} onChange={(event) => setLayerId(event.target.value)} aria-label="保存到图层">
-          {layers.map((layer) => <option key={layer.id} value={layer.id}>{layer.name}</option>)}
-        </select>
-      </label>
-      <div className="fsp-colors" role="group" aria-label="颜色">
-        {COLORS.map((item) => (
-          <button key={item} type="button" className={color === item ? 'color-chip active' : 'color-chip'} style={{ '--color': item }} onClick={() => setColor(item)} aria-label={`颜色 ${item}`} />
-        ))}
-      </div>
-      <div className="fsp-media">
-        <button type="button" className="fsp-media-add" onClick={() => mediaInputRef.current?.click()} disabled={mediaBusy || currentAttachments.length >= MAX_ATTACHMENTS_PER_FEATURE} aria-label="添加图片或视频">
-          {mediaBusy ? <span>上传中…</span> : <><Camera size={14} /> 添加</>}
-        </button>
-        {currentAttachments.map((attachment) => (
-          <span key={attachment.id} className="fsp-media-thumb" title={attachment.original_name}>
-            {attachment.type === 'video' ? <Video size={16} /> : null}
-            <button type="button" onClick={() => removeAttachment(attachment)} aria-label={`删除附件 ${attachment.original_name}`}><X size={12} /></button>
-          </span>
-        ))}
-      </div>
-      {error ? <p className="fsp-error" role="alert">{error}</p> : null}
-      <input ref={mediaInputRef} type="file" className="visually-hidden" accept={MEDIA_ACCEPT} multiple onChange={handleMedia} />
-      <footer className="fsp-actions">
-        <button type="button" className="text-button danger" onClick={handleDelete} disabled={busy}><Trash2 size={15} /> 删除</button>
-        <button type="submit" className="primary-button" disabled={busy}>{busy ? '保存中…' : '保存'}</button>
-      </footer>
-    </form>
-  );
-}
-
-function PlaceFeatureCard({ feature, layer, canEdit, onClose, onCopyCoordinates, onStyle, onSave, onMedia, onRoute, onDelete }) {
-  const [styleOpen, setStyleOpen] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [draftName, setDraftName] = useState(feature.name);
-  const [draftDescription, setDraftDescription] = useState(feature.description || '');
-  const [editBusy, setEditBusy] = useState(false);
-  const [editError, setEditError] = useState('');
-  const [lng, lat] = feature.geometry.coordinates;
-  const coordinates = `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`;
-  const description = feature.description?.trim() || layer.name;
-  const currentColor = feature.style.color || layer.style.color || '#1a73e8';
-
-  useEffect(() => {
-    if (editing) return;
-    setDraftName(feature.name);
-    setDraftDescription(feature.description || '');
-  }, [editing, feature.description, feature.name]);
-
-  const cancelEditing = () => {
-    setDraftName(feature.name);
-    setDraftDescription(feature.description || '');
-    setEditError('');
-    setEditing(false);
-  };
-
-  const saveInlineEdit = async (event) => {
-    event.preventDefault();
-    if (editBusy || !canEdit) return;
-    try {
-      setEditBusy(true);
-      setEditError('');
-      await onSave({ name: draftName.trim() || '无标题要素', description: draftDescription });
-      setEditing(false);
-    } catch (requestError) {
-      setEditError(requestError.message);
-    } finally {
-      setEditBusy(false);
-    }
-  };
-
-  return (
-    <article
-      className="my-maps-place-card"
-      aria-label={`${feature.name} 地点详情`}
-      onClickCapture={(event) => { event.nativeEvent.openMyMapCardInteraction = true; }}
-    >
-      {editing && canEdit ? (
-        <form className="place-card-edit-form" onSubmit={saveInlineEdit}>
-          <div className="place-card-edit-fields">
-            <input autoFocus value={draftName} onChange={(event) => setDraftName(event.target.value)} aria-label="地点名称" />
-            <textarea rows="3" value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} aria-label="地点说明" placeholder="添加说明" />
-            {editError ? <p role="alert">{editError}</p> : null}
-          </div>
-          <button type="button" className="place-card-close" onClick={onClose} aria-label="关闭地点详情" title="关闭"><X size={21} /></button>
-          <footer className="place-card-edit-actions">
-            <button type="button" onClick={cancelEditing}>取消</button>
-            <button type="submit" className="save" disabled={editBusy}>{editBusy ? '保存中…' : '保存'}</button>
-          </footer>
-        </form>
-      ) : (
-        <>
-          <header className="place-card-header">
-            <div>
-              <h2>{feature.name}</h2>
-              <p>{description}</p>
-            </div>
-            <button type="button" className="place-card-close" onClick={onClose} aria-label="关闭地点详情" title="关闭"><X size={21} /></button>
-          </header>
-          <FeatureMediaGallery attachments={feature.attachments} featureName={feature.name} compact />
-          <footer className="place-card-footer">
-            <button type="button" className="place-card-coordinates" onClick={onCopyCoordinates} aria-label={`复制坐标 ${coordinates}`} title="复制坐标">
-              <MapPin size={14} /><span>{coordinates}</span>
-            </button>
-            <nav className="place-card-actions" aria-label="地点操作">
-              {canEdit ? <><button type="button" className={styleOpen ? 'active' : ''} onClick={() => setStyleOpen((open) => !open)} aria-label="设置地点样式" aria-expanded={styleOpen} title="设置样式"><PaintBucket size={18} /></button>
-              <button type="button" onClick={() => { setStyleOpen(false); setEditing(true); }} aria-label="编辑地点" title="编辑"><Pencil size={18} /></button>
-              <button type="button" onClick={onMedia} aria-label="上传图片或视频" title="添加图片或视频"><Camera size={18} /></button></> : null}
-              <button type="button" onClick={onRoute} aria-label="以此地点为路线起点" title="添加路线"><GitFork size={18} /></button>
-              {canEdit ? <button type="button" className="danger" onClick={onDelete} aria-label="删除地点" title="删除"><Trash2 size={18} /></button> : null}
-            </nav>
-            {styleOpen && canEdit ? (
-              <div className="place-card-style-picker" role="dialog" aria-label="选择地点颜色">
-                {COLORS.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    className={currentColor === color ? 'active' : ''}
-                    style={{ '--color': color }}
-                    onClick={() => { onStyle(color); setStyleOpen(false); }}
-                    aria-label={`应用颜色 ${color}`}
-                    aria-pressed={currentColor === color}
-                  />
-                ))}
-              </div>
-            ) : null}
-          </footer>
-        </>
-      )}
-    </article>
-  );
-}
 
 export default function MapEditor({ mapId }) {
   const { user } = useAuth();
@@ -485,6 +499,9 @@ export default function MapEditor({ mapId }) {
   const [saving, setSaving] = useState(false);
   const [selectedLayerId, setSelectedLayerId] = useState(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState(null);
+  const [editingFeatureId, setEditingFeatureId] = useState(null);
+  const [featureStylePreview, setFeatureStylePreview] = useState(null);
+  const [featureClickPosition, setFeatureClickPosition] = useState(null);
   const [expandedLayers, setExpandedLayers] = useState({});
   const [activeTool, setActiveTool] = useState('pan');
   const [draftPoints, setDraftPoints] = useState([]);
@@ -493,6 +510,7 @@ export default function MapEditor({ mapId }) {
   const [shareDialog, setShareDialog] = useState(false);
   const [share, setShare] = useState(null);
   const [tableLayer, setTableLayer] = useState(null);
+  const [layerNameDialog, setLayerNameDialog] = useState(null);
   const [basePicker, setBasePicker] = useState(false);
   const [moreMenu, setMoreMenu] = useState(false);
   const [layerMenu, setLayerMenu] = useState(null);
@@ -517,6 +535,13 @@ export default function MapEditor({ mapId }) {
   const searchInputRef = useRef(null);
   const routeEditorRef = useRef(null);
   const draftRedoRef = useRef([]);
+  const drawingSaveRef = useRef(false);
+  const drawingSessionRef = useRef(0);
+  const featureDialogRef = useRef(featureDialog);
+  const featureSavePendingRef = useRef(false);
+  featureDialogRef.current = featureDialog;
+  const hasPendingFeature = () => Boolean(featureDialogRef.current && !featureDialogRef.current.id);
+  const closeFeatureDialog = () => { if (!featureSavePendingRef.current) setFeatureDialog(null); };
   const measurementJournalRef = useRef({ past: [], future: [] });
   const measurementStateRef = useRef({ points: [], closed: false });
   const lastHistoryDomainRef = useRef('server');
@@ -595,6 +620,9 @@ export default function MapEditor({ mapId }) {
     }
   }, [mapData, directions.visible, directions.isSaved, directions.target, directions.openFrom, saving, editorHistory.busy]);
   const searchQuery = placeSearch.query;
+  useEffect(() => {
+    if (editingFeatureId !== selectedFeatureId || activeTool !== 'pan' || directions.visible || !canEdit) setEditingFeatureId(null);
+  }, [activeTool, canEdit, directions.visible, editingFeatureId, selectedFeatureId]);
   const searchResults = placeSearch.results;
   const searching = placeSearch.loading;
   const searchSuggestions = placeSearch.suggestions;
@@ -696,8 +724,8 @@ export default function MapEditor({ mapId }) {
       if (modifier && event.key.toLowerCase() === 'k') { event.preventDefault(); searchInputRef.current?.focus(); return; }
       if (typing) return;
       if (modifier && event.key === '/') { event.preventDefault(); setShortcutDialog(true); return; }
-      if (featureDialog || shareDialog || tableLayer || layerStyleTarget || shortcutDialog) {
-        if (event.key === 'Escape') { setFeatureDialog(null); setShareDialog(false); setTableLayer(null); setLayerStyleTarget(null); setShortcutDialog(false); }
+      if (featureDialog || shareDialog || tableLayer || layerNameDialog || layerStyleTarget || shortcutDialog) {
+        if (event.key === 'Escape') { closeFeatureDialog(); setShareDialog(false); setTableLayer(null); setLayerNameDialog(null); setLayerStyleTarget(null); setShortcutDialog(false); }
         return;
       }
       if (modifier && ['z', 'y'].includes(event.key.toLowerCase())) {
@@ -707,9 +735,10 @@ export default function MapEditor({ mapId }) {
         return;
       }
       if (event.key === 'Escape') {
+        if (editingFeatureId !== null) { setEditingFeatureId(null); return; }
         if (contextMenu) { setContextMenu(null); return; }
         if (moreMenu || basePicker || styleTarget) { setMoreMenu(false); setBasePicker(false); setStyleTarget(null); return; }
-        if (activeTool !== 'pan') { setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null); return; }
+        if (activeTool !== 'pan') { cancelDrawing(); return; }
         if (directions.visible) { directions.close(); return; }
         if (placeSearch.mode === 'detail') { placeSearch.backToResults(); return; }
         if (placeSearch.mode) { placeSearch.clear(); return; }
@@ -723,7 +752,7 @@ export default function MapEditor({ mapId }) {
       }
       if (['Backspace','Delete'].includes(event.key)) {
         if (activeTool === 'measure' && measurementPoints.length) { event.preventDefault(); updateMeasurement((points) => points.slice(0, -1)); }
-        else if (['line','polygon'].includes(activeTool) && draftPoints.length) { event.preventDefault(); undo(); }
+        else if ((activeTool === 'line' || SHAPE_TOOLS.includes(activeTool)) && draftPoints.length) { event.preventDefault(); undo(); }
         else if (canEdit && selectedFeatureId !== null && !editorHistory.busy) {
           event.preventDefault(); const feature = mapDataLatestRef.current?.layers.flatMap((layer) => layer.features).find((item) => item.id === selectedFeatureId);
           if (feature) deleteFeatureFromCard(feature);
@@ -743,10 +772,11 @@ export default function MapEditor({ mapId }) {
     const dismissOpenMenus = (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
+      if (target.closest('.marker-style-backdrop')) return;
       if (layerMenu !== null && !target.closest('[data-layer-menu-root]')) setLayerMenu(null);
       if (moreMenu && !target.closest('[data-map-menu-root]')) setMoreMenu(false);
       if (basePicker && !target.closest('[data-base-picker-root]')) setBasePicker(false);
-      if (styleTarget && !target.closest('[data-style-popover-root]') && !target.closest('.mini-style-button')) setStyleTarget(null);
+      if (styleTarget && !target.closest('[data-style-popover-root], .marker-style-backdrop') && !target.closest('.mini-style-button')) setStyleTarget(null);
     };
     document.addEventListener('pointerdown', dismissOpenMenus, true);
     return () => document.removeEventListener('pointerdown', dismissOpenMenus, true);
@@ -758,15 +788,21 @@ export default function MapEditor({ mapId }) {
     if (!mapData || selectedFeatureId === null) return null;
     for (const layer of mapData.layers) {
       const feature = layer.features.find((candidate) => candidate.id === selectedFeatureId);
-      if (feature) return { feature, layer };
+      if (feature && layer.visible) return { feature, layer };
     }
     return null;
   }, [mapData, selectedFeatureId]);
   const visibleMapData = useMemo(() => {
-    if (!mapData || !directions.visible || !directions.selectedAlternative || !directions.target?.featureId) return mapData;
-    // The active route preview replaces its saved geometry while being edited.
-    return { ...mapData, layers: mapData.layers.map((layer) => ({ ...layer, features: layer.features.filter((feature) => feature.id !== directions.target.featureId) })) };
-  }, [mapData, directions.visible, directions.selectedAlternative, directions.target?.featureId]);
+    if (!mapData) return mapData;
+    const routeId = directions.visible && directions.selectedAlternative ? directions.target?.featureId : null;
+    const preview = featureStylePreview;
+    if (!routeId && !preview) return mapData;
+    // Preview is local render data: it never changes the persisted map or history.
+    return { ...mapData, layers: mapData.layers.map((layer) => ({ ...layer,
+      features: layer.features.filter((feature) => feature.id !== routeId).map((feature) => preview?.featureId === feature.id
+        ? { ...feature, style: { ...feature.style, ...preview.style } } : feature),
+    })) };
+  }, [mapData, directions.visible, directions.selectedAlternative, directions.target?.featureId, featureStylePreview]);
   const presenting = (isMobile ? sheetState === 'collapsed' : sidebarCollapsed) && activeTool === 'pan' && !directions.visible && !featureDialog && !placeSearch.mode;
   useEffect(() => { setStoryDetailId(null); }, [presenting]);
   useEffect(() => {
@@ -866,11 +902,12 @@ export default function MapEditor({ mapId }) {
     setMeasurementPoints(points);
     setMeasurementClosed(closed);
   };
-  const localDraft = ['line', 'polygon'].includes(activeTool);
+  const localDraft = activeTool === 'line' || SHAPE_TOOLS.includes(activeTool);
   const localMeasurement = lastHistoryDomainRef.current === 'measurement';
   const canUndo = localDraft ? draftPoints.length > 0 : localMeasurement ? measurementJournalRef.current.past.length > 0 : canEdit && editorHistory.canUndo;
-  const canRedo = localDraft ? draftRedoRef.current.length > 0 : localMeasurement ? measurementJournalRef.current.future.length > 0 : canEdit && editorHistory.canRedo;
+  const canRedo = ['rectangle', 'circle'].includes(activeTool) ? false : localDraft ? draftRedoRef.current.length > 0 : localMeasurement ? measurementJournalRef.current.future.length > 0 : canEdit && editorHistory.canRedo;
   const undo = () => {
+    if (['rectangle', 'circle'].includes(activeTool)) return cancelDrawing();
     if (localDraft) {
       if (!draftPoints.length) return;
       draftRedoRef.current.push(draftPoints.at(-1));
@@ -882,6 +919,7 @@ export default function MapEditor({ mapId }) {
     } else if (!localMeasurement) return editorHistory.undo();
   };
   const redo = () => {
+    if (['rectangle', 'circle'].includes(activeTool)) return;
     if (localDraft) {
       const point = draftRedoRef.current.pop();
       if (point) setDraftPoints([...draftPoints, point]);
@@ -893,31 +931,51 @@ export default function MapEditor({ mapId }) {
   };
 
   const finishDraft = async (tool = activeTool, points = draftPoints) => {
+    if (drawingSaveRef.current) return;
     const compactPoints = compactDraftPoints(points);
     if (compactPoints.length < 2) return;
     if (tool === 'measure') {
       updateMeasurement(compactPoints); setHoverPoint(null); setActiveTool('pan'); return;
     }
-    if (!selectedLayer) return;
-    const isPolygon = tool === 'polygon';
-    if (isPolygon && compactPoints.length < 3) return;
-    const geometry = isPolygon
-      ? { type: 'Polygon', coordinates: [[...compactPoints, compactPoints[0]]] }
-      : { type: 'LineString', coordinates: compactPoints };
-    const created = await addFeature(selectedLayer.id, {
-      name: isPolygon ? '未命名区域' : '未命名线条',
-      description: '双击结束绘制，可在左侧列表中继续编辑。',
-      geometry,
-      style: { color: isPolygon ? '#00897b' : '#e85d4a', fillColor: '#4db6ac', fillOpacity: 0.28, weight: 4 },
-    });
-    setDraftPoints([]);
-    draftRedoRef.current = [];
-    setHoverPoint(null);
-    setActiveTool('pan');
-    setToast(created?.historyWarning || (isPolygon ? '已添加区域' : '已添加线条'));
+    if (!selectedLayer || !canEdit) return;
+    const isShape = SHAPE_TOOLS.includes(tool);
+    const geometry = tool === 'rectangle' ? rectangleGeometry(compactPoints[0], compactPoints[1])
+      : tool === 'circle' ? circleGeometry(compactPoints[0], compactPoints[1])
+        : tool === 'polygon' ? polygonGeometry(compactPoints)
+          : { type: 'LineString', coordinates: compactPoints };
+    if (!geometry) {
+      setToast(tool === 'polygon' ? text('请放置至少三个不共线的顶点。', 'Place at least three non-collinear vertices.') : text('请选择不同的位置，形成有面积的图形。', 'Choose another position to give the shape an area.'));
+      return;
+    }
+    drawingSaveRef.current = true;
+    try {
+      setFeatureDialog({
+        name: { polygon: '未命名区域', rectangle: '未命名矩形', circle: '未命名圆形' }[tool] || '未命名线条',
+        description: '',
+        geometry,
+        style: { color: isShape ? '#00897b' : '#e85d4a', fillColor: '#4db6ac', fillOpacity: 0.28, weight: 4 },
+        layerId: selectedLayer.id,
+      });
+      setSelectedFeatureId(null); setEditingFeatureId(null);
+      setDraftPoints([]); draftRedoRef.current = []; setHoverPoint(null); setActiveTool('pan');
+    } finally { drawingSaveRef.current = false; }
+  };
+
+  const nearPolygonStart = (point) => {
+    if (activeTool !== 'polygon' || draftPoints.length < 3 || !point) return false;
+    const start = mapRef.current?.getScreenPosition(draftPoints[0]);
+    const end = mapRef.current?.getScreenPosition(point);
+    return start && end ? Math.hypot(start.x - end.x, start.y - end.y) <= 12
+      : Math.abs(draftPoints[0][0] - point[0]) < 1e-9 && Math.abs(draftPoints[0][1] - point[1]) < 1e-9;
+  };
+  const cancelDrawing = () => {
+    if (hasPendingFeature()) return;
+    drawingSessionRef.current += 1;
+    setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null); draftRedoRef.current = [];
   };
 
   const handleMapClick = async (latlng, originalEvent) => {
+    if (drawingSaveRef.current || hasPendingFeature()) return;
     if (originalEvent?.openMyMapCardInteraction || originalEvent?.target?.closest?.('.my-maps-place-card')) return;
     if (contextMenu) setContextMenu(null);
     const clickedPoint = [latlng.lng, latlng.lat];
@@ -939,30 +997,58 @@ export default function MapEditor({ mapId }) {
       return;
     }
     if (!canEdit) return;
+    if (['rectangle', 'circle'].includes(activeTool)) return;
+    if (nearPolygonStart(point)) { await finishDraft('polygon', draftPoints); return; }
     lastHistoryDomainRef.current = 'draft';
     const next = compactDraftPoints([...draftPoints, point]);
     setDraftPoints(next);
     draftRedoRef.current = [];
   };
 
+  const handleShapeDrag = ({ phase, tool, start, position }) => {
+    if (tool !== activeTool) return;
+    if (phase === 'cancel') { setDraftPoints([]); setHoverPoint(null); draftRedoRef.current = []; return; }
+    if (!canEdit || drawingSaveRef.current) return;
+    if (phase === 'start') {
+      lastHistoryDomainRef.current = 'draft';
+      draftRedoRef.current = [];
+      setDraftPoints([[start.lng, start.lat]]);
+      setHoverPoint(null);
+      setContextMenu(null);
+    } else if (phase === 'move') {
+      setHoverPoint([position.lng, position.lat]);
+    } else {
+      setDraftPoints([]);
+      setHoverPoint(null);
+      if (phase === 'end') finishDraft(tool, [[start.lng, start.lat], [position.lng, position.lat]]).catch(() => {});
+    }
+  };
+
   const handleDoubleClick = async (latlng) => {
-    if (['line', 'polygon', 'measure'].includes(activeTool)) {
+    if (['line', 'measure'].includes(activeTool)) {
       const point = [latlng.lng, latlng.lat];
       await finishDraft(activeTool, [...(activeTool === 'measure' ? measurementPoints : draftPoints), point]);
     }
   };
 
-  const selectFeature = useCallback((feature, layer, edit = false, focus = true) => {
+  const selectFeature = useCallback((feature, layer, edit = false, focus = true, position = null) => {
+    if (featureDialogRef.current && !featureDialogRef.current.id) return;
+    drawingSessionRef.current += 1;
+    setEditingFeatureId(null);
+    setFeatureClickPosition(position ? { featureId: feature.id, position: [position.lng, position.lat] } : null);
     setSelectedFeatureId(feature.id);
     setSelectedLayerId(layer.id);
+    placeSearch.clear();
+    directions.close();
+    setActiveTool('pan');
+    setDraftPoints([]);
+    setHoverPoint(null);
     if (focus) mapRef.current?.focusFeature(feature.id);
-    if (layer.kind === 'directions') {
-      placeSearch.clear(); setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null);
-      setSidebarCollapsed(false); setSheetState('half');
-      setExpandedLayers((current) => ({ ...current, [layer.id]: true }));
+    if (isMobile) setSheetState('half');
+    if (edit && feature.style?.routeData) {
       directions.openFrom({ savedFeature: feature, layerId: layer.id, featureId: feature.id });
     } else if (edit) setFeatureDialog({ ...feature, layerId: layer.id });
-  }, [directions.openFrom, placeSearch.clear]);
+  }, [directions.close, directions.openFrom, isMobile, placeSearch.clear]);
 
   const uploadFeatureAttachments = async (featureId, files) => {
     if (!canEdit) throw new Error(text('当前为只读权限', 'This map is read-only'));
@@ -1023,14 +1109,50 @@ export default function MapEditor({ mapId }) {
     openDirections({ from: { name: feature.name, position: feature.geometry.coordinates } });
   };
 
-  const applyCardStyle = async (feature, color) => {
+  const applyCardStyle = async (feature, style) => {
     try {
-      if (!await applyStyle(feature, color)) return;
-      setSelectedFeatureId(feature.id);
-      setToast('地点样式已更新');
+      if (!await applyStyle(feature, style)) return false;
+      setToast('要素样式已更新');
+      return true;
     } catch (requestError) {
       setToast(requestError.message);
+      return false;
     }
+  };
+
+  const saveTableCell = async ({ featureId, field, value, baseValue }) => {
+    const customId = tableCustomFieldId(field);
+    if (!canEdit || (!['name', 'description'].includes(field) && !customId)) throw new Error(text('当前不可编辑。', 'Editing is unavailable.'));
+    const next = field === 'name' ? value.trim() || text('无标题要素', 'Untitled feature') : value;
+    try {
+      const data = await performEdit('Edit table cell', (expectedFingerprint) => {
+        const layer = mapDataLatestRef.current.layers.find((item) => item.features.some((feature) => feature.id === featureId));
+        const current = layer?.features.find((feature) => feature.id === featureId);
+        if (!current) throw new Error(text('要素已不存在。', 'This feature no longer exists.'));
+        if (customId && !(layer.columns || []).some((column) => column.id === customId)) throw new Error(text('此列已不存在。', 'This column no longer exists.'));
+        const currentValue = tableFieldValue(current, field);
+        if (currentValue === next) return mapDataLatestRef.current;
+        if (currentValue !== baseValue) throw Object.assign(new Error(text('此单元格已被更新，修改仍保留，请确认后重试。', 'This cell was updated elsewhere. Your draft is retained; review it before retrying.')), { latestValue: currentValue });
+        return api.updateFeature(featureId, { ...(customId ? { properties: { [customId]: next } } : { [field]: next }), expectedFingerprint, expectedVersion: current.version });
+      });
+      const saved = data.layers.flatMap((layer) => layer.features).find((feature) => feature.id === featureId);
+      return saved ? tableFieldValue(saved, field) : next;
+    } catch (error) {
+      const latest = error.latest?.layers ? error.latest.layers.flatMap((layer) => layer.features).find((feature) => feature.id === featureId) : error.latest;
+      if (latest && Object.hasOwn(latest, customId ? 'properties' : field)) error.latestValue = tableFieldValue(latest, field);
+      throw error;
+    }
+  };
+
+  const addTableColumn = async (layerId, name) => {
+    if (!canEdit) throw new Error(text('当前不可编辑。', 'Editing is unavailable.'));
+    const column = { id: `col_${crypto.randomUUID()}`, name: name.trim() };
+    await performEdit('Add table column', (expectedFingerprint) => {
+      const current = mapDataLatestRef.current.layers.find((layer) => layer.id === layerId);
+      if (!current) throw new Error(text('图层已不存在。', 'This layer no longer exists.'));
+      return api.updateLayer(layerId, { columns: [...(current.columns || []), column], expectedFingerprint, expectedVersion: current.version });
+    });
+    return column;
   };
 
   const saveCardDetails = async (feature, changes) => {
@@ -1039,7 +1161,7 @@ export default function MapEditor({ mapId }) {
       const data = await performEdit('Edit feature details', (expectedFingerprint) => api.updateFeature(feature.id, { ...changes, expectedFingerprint, expectedVersion: feature.version }));
       replaceData(data);
       setSelectedFeatureId(feature.id);
-      setToast('地点信息已保存');
+      setToast('要素信息已保存');
     } catch (requestError) {
       handleWriteError(requestError);
       throw requestError;
@@ -1048,10 +1170,10 @@ export default function MapEditor({ mapId }) {
 
   const deleteFeatureFromCard = async (feature) => {
     if (!canEdit) return false;
-    if (!window.confirm(`删除地点“${feature.name}”？`)) return;
+    if (!window.confirm(`删除${feature.type === 'Point' ? '地点' : '要素'}“${feature.name}”？`)) return;
     try {
       if (!await deleteFeature(feature)) return false;
-      setToast('地点已删除');
+      setToast('要素已删除');
       return true;
     } catch (requestError) {
       setSaving(false);
@@ -1074,6 +1196,9 @@ export default function MapEditor({ mapId }) {
   };
 
   const saveFeatureDialog = async (payload) => {
+    if (!canEdit) { setToast(text('当前为只读权限', 'This map is read-only')); return false; }
+    if (featureSavePendingRef.current) return false;
+    featureSavePendingRef.current = true;
     let createdFeatureId = null;
     let historyWarning;
     try {
@@ -1098,7 +1223,7 @@ export default function MapEditor({ mapId }) {
       }
       if (pendingFiles.length) await uploadFeatureAttachments(featureId, pendingFiles);
       setFeatureDialog(null);
-      if (!payload.id && featurePayload.geometry?.type === 'Point') setSelectedFeatureId(featureId);
+      if (!payload.id) setSelectedFeatureId(featureId);
       setToast(historyWarning || (pendingFiles.length ? `要素已保存，并上传 ${pendingFiles.length} 个附件` : '要素已保存'));
       return true;
     } catch (requestError) {
@@ -1106,42 +1231,40 @@ export default function MapEditor({ mapId }) {
       if (createdFeatureId !== null) {
         setFeatureDialog(null);
         setSelectedFeatureId(createdFeatureId);
-        setToast(`地点已保存，但附件上传失败：${requestError.message}`);
+        setToast(`要素已保存，但附件上传失败：${requestError.message}`);
         return true;
       }
       setToast(requestError.message);
       return false;
-    }
+    } finally { featureSavePendingRef.current = false; }
   };
 
-  const addLayer = async () => {
-    if (!canEdit) return;
-    const name = window.prompt('图层名称', '无标题图层');
-    if (name === null) return;
-    try {
+  const addLayer = () => {
+    if (canEdit && !hasPendingFeature()) setLayerNameDialog({ layer: null });
+  };
+
+  const renameLayer = (layer) => {
+    if (canEdit) setLayerNameDialog({ layer });
+  };
+
+  const saveLayerName = async (name) => {
+    if (!canEdit) throw new Error(text('当前不可编辑。', 'Editing is unavailable.'));
+    if (!layerNameDialog.layer) {
       const data = await performEdit('Add layer', (expectedFingerprint) => api.addLayer(mapId, { name, expectedFingerprint }));
       const newest = data.layers.find((layer) => layer.id === data.createdLayerId);
       replaceData(data);
       setSelectedLayerId(newest.id);
       setExpandedLayers((items) => ({ ...items, [newest.id]: true }));
-      setToast('已添加图层');
-    } catch (requestError) {
-      handleWriteError(requestError);
-    }
-  };
-
-  const renameLayer = async (layer) => {
-    if (!canEdit) return false;
-    const name = window.prompt('重命名图层', layer.name);
-    if (!name?.trim()) return false;
-    try {
-      await performEdit('Rename layer', (expectedFingerprint) => api.updateLayer(layer.id, { name: name.trim(), expectedVersion: layer.version, expectedFingerprint }));
+      setToast(text('已添加图层', 'Layer added'));
+    } else {
+      await performEdit('Rename layer', (expectedFingerprint) => {
+        const layer = mapDataLatestRef.current.layers.find((item) => item.id === layerNameDialog.layer.id);
+        if (!layer) throw new Error(text('图层已不存在。', 'This layer no longer exists.'));
+        return api.updateLayer(layer.id, { name, expectedVersion: layer.version, expectedFingerprint });
+      });
       setLayerMenu(null);
-      return true;
-    } catch (requestError) {
-      handleWriteError(requestError);
-      return false;
     }
+    setLayerNameDialog(null);
   };
 
   const removeLayer = async (layer) => {
@@ -1161,15 +1284,19 @@ export default function MapEditor({ mapId }) {
     }
   };
 
-  const applyStyle = async (feature, color) => {
+  const applyStyle = async (feature, style, keepOpen = false) => {
     if (!canEdit) return false;
     try {
-      replaceData(await performEdit('Feature style', (expectedFingerprint) => api.updateFeature(feature.id, {
-        expectedFingerprint,
-        style: { ...feature.style, color, fillColor: color },
-        expectedVersion: feature.version,
-      })));
-      setStyleTarget(null);
+      replaceData(await performEdit('Feature style', (expectedFingerprint) => {
+        const latest = mapDataLatestRef.current.layers.flatMap((layer) => layer.features).find((item) => item.id === feature.id);
+        if (!latest) throw new Error(text('要素已不存在。', 'This feature no longer exists.'));
+        return api.updateFeature(feature.id, {
+          expectedFingerprint,
+          style: { ...latest.style, ...(typeof style === 'string' ? { color: style, fillColor: style } : style) },
+          expectedVersion: latest.version,
+        });
+      }));
+      if (!keepOpen) setStyleTarget((current) => current?.feature?.id === feature.id ? null : current);
       return true;
     } catch (requestError) {
       handleWriteError(requestError);
@@ -1177,37 +1304,9 @@ export default function MapEditor({ mapId }) {
     }
   };
 
-  // Save from the inline style popover: persist name/description/layer/color but
-  // keep the popover open so the user can keep editing. Closes on success only
-  // when the feature moved to a different layer (its anchor row changes).
-  const saveStylePopover = async (payload) => {
-    try {
-      setSaving(true);
-      const data = await performEdit('Edit feature style', (expectedFingerprint) => api.updateFeature(payload.id, {
-        expectedFingerprint,
-        name: payload.name,
-        description: payload.description,
-        style: payload.style,
-        layerId: payload.layerId,
-        expectedVersion: payload.version,
-      }));
-      replaceData(data);
-      setSelectedFeatureId(payload.id);
-      setToast('地点信息已保存');
-      if (payload.layerId !== styleTarget?.feature?.layerId && styleTarget?.feature?.id === payload.id) setStyleTarget(null);
-    } catch (requestError) {
-      setSaving(false);
-      setToast(requestError.message);
-      throw requestError;
-    }
-  };
-
-  const deleteStylePopoverFeature = async (feature) => {
-    await deleteFeature(feature);
-    setStyleTarget(null);
-  };
-
   const openDirections = (settings = {}) => {
+    if (hasPendingFeature()) return;
+    drawingSessionRef.current += 1;
     placeSearch.clear(); setSelectedFeatureId(null); setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null);
     if (settings.layerId) {
       setSelectedLayerId(settings.layerId);
@@ -1217,19 +1316,26 @@ export default function MapEditor({ mapId }) {
     directions.openFrom({ newLayer: !settings.savedFeature && !settings.routeData, ...settings });
   };
   const changeTool = (tool) => {
+    if (hasPendingFeature()) return;
+    if ((tool === 'marker' || tool === 'line' || SHAPE_TOOLS.includes(tool)) && (drawingSaveRef.current || editorHistory.busy)) return;
+    drawingSessionRef.current += 1;
     setContextMenu(null); setSelectedFeatureId(null); setDraftPoints([]); setHoverPoint(null); draftRedoRef.current = [];
     if (tool === 'route') { openDirections(); return; }
-    if (['marker', 'line', 'polygon'].includes(tool) && selectedLayer) setSelectedLayerId(selectedLayer.id);
+    if ((tool === 'marker' || tool === 'line' || SHAPE_TOOLS.includes(tool)) && selectedLayer) setSelectedLayerId(selectedLayer.id);
     directions.close(); placeSearch.clear(); setActiveTool(tool);
     lastHistoryDomainRef.current = 'server';
     if (tool === 'measure') { if (isMobile) setSheetState('collapsed'); measurementJournalRef.current = {past: [], future: []}; updateMeasurement([], false, false); lastHistoryDomainRef.current = 'measurement'; }
   };
   const searchPlaces = async (event) => {
+    if (hasPendingFeature()) { event.preventDefault(); return; }
+    cancelDrawing();
     setActiveTool('pan'); setSelectedFeatureId(null); setSidebarCollapsed(false); setSheetState('half');
     const places = await placeSearch.onSearch(event);
     if (places.length) mapRef.current?.fitPositions(places.map((place) => place.position), 15);
   };
   const openPlaceDetail = (place) => {
+    if (hasPendingFeature()) return;
+    cancelDrawing();
     setSelectedFeatureId(null); setActiveTool('pan');
     searchViewRef.current = { center: mapRef.current?.getCenter(), zoom: mapRef.current?.getZoom() };
     return placeSearch.openDetail(place);
@@ -1240,7 +1346,7 @@ export default function MapEditor({ mapId }) {
     if (view?.center) mapRef.current?.setView([view.center.lng, view.center.lat], view.zoom);
   };
   const searchPanelState = { ...placeSearch, openDetail: openPlaceDetail, backToResults: backToSearchResults };
-  const chooseSuggestion = (suggestion) => { setActiveTool('pan'); setSelectedFeatureId(null); placeSearch.chooseSuggestion(suggestion); };
+  const chooseSuggestion = (suggestion) => { cancelDrawing(); setSelectedFeatureId(null); placeSearch.chooseSuggestion(suggestion); };
   const handleSearchKey = placeSearch.handleKeyDown;
   const addSearchResult = async (candidate) => {
     if (!selectedLayer || !candidate.position || !canEdit) return;
@@ -1263,13 +1369,17 @@ export default function MapEditor({ mapId }) {
       try { replaceData(await api.map(mapId)); } catch { /* Keep the visible server-backed route. */ }
     }
   };
-  const onMapContextMenu = (point, screen) => setContextMenu({ point, screen });
+  const onMapContextMenu = (point, screen) => { if (!hasPendingFeature()) setContextMenu({ point, screen }); };
   const contextPosition = contextMenu ? [contextMenu.point.lng, contextMenu.point.lat] : null;
   const startMeasurement = (position) => {
+    if (hasPendingFeature()) return;
+    cancelDrawing();
     if (isMobile) setSheetState('collapsed');
     directions.close(); placeSearch.clear(); setSelectedFeatureId(null); setActiveTool('measure'); measurementJournalRef.current = {past: [], future: []}; measurementStateRef.current = {points: [], closed: false}; updateMeasurement(position ? [position] : [], false); lastHistoryDomainRef.current = 'measurement'; setContextMenu(null); setHoverPoint(null);
   };
   const addMarkerAt = (position) => {
+    if (hasPendingFeature()) return;
+    cancelDrawing();
     if (!canEdit || !selectedLayer) return;
     setSelectedLayerId(selectedLayer.id);
     setFeatureDialog({ name: text('新地点','New place'), description:'', geometry:{type:'Point',coordinates:position}, style:{color:selectedLayer.style.color || '#1a73e8'}, layerId:selectedLayer.id });
@@ -1299,7 +1409,9 @@ export default function MapEditor({ mapId }) {
   const toolInstruction = {
     marker: text('点击地图放置标记', 'Click the map to add a place'),
     line: text('逐点点击绘线，双击结束', 'Click to draw a line; double-click to finish'),
-    polygon: text('逐点点击绘制区域，双击结束', 'Click to draw a shape; double-click to finish'),
+    polygon: text('逐点绘制，点击起点自动闭合', 'Add vertices, then click the start to close'),
+    rectangle: text('按住鼠标拖拽绘制矩形，松开完成', 'Drag to draw a rectangle; release to finish'),
+    circle: text('从圆心按住拖拽，松开完成圆形', 'Drag from the center; release to finish the circle'),
 
     measure: text('逐点测量，双击结束', 'Click to measure; double-click to finish'),
   }[activeTool];
@@ -1312,8 +1424,36 @@ export default function MapEditor({ mapId }) {
 
   const activeBaseMapKey = normalizeBaseMapKey(mapData.base_map);
   const previewMode = new URLSearchParams(window.location.search).get('preview') === '1';
-  const draftPoint = featureDialog && !featureDialog.id && featureDialog.geometry?.type === 'Point' ? featureDialog : null;
-  const selectedPointContext = selectedFeatureContext?.feature.type === 'Point' ? selectedFeatureContext : null;
+  const draftFeature = featureDialog && !featureDialog.id ? featureDialog : null;
+  const draftPoint = draftFeature?.geometry?.type === 'Point' ? draftFeature : null;
+  const selectedCard = selectedFeatureContext && editingFeatureId !== selectedFeatureId ? (
+    <FeatureCard
+      key={selectedFeatureId}
+      feature={selectedFeatureContext.feature}
+      layer={selectedFeatureContext.layer}
+      lang={lang}
+      canEdit={canEdit}
+      busy={editorHistory.busy}
+      onClose={() => setSelectedFeatureId(null)}
+      onCopyCoordinates={() => copyFeatureCoordinates(selectedFeatureContext.feature)}
+      onStyle={(color) => applyCardStyle(selectedFeatureContext.feature, color)}
+      onStylePreview={(style) => {
+        const featureId = selectedFeatureContext.feature.id;
+        setFeatureStylePreview((current) => style ? { featureId, style } : current?.featureId === featureId ? null : current);
+      }}
+      onSave={(changes) => saveCardDetails(selectedFeatureContext.feature, changes)}
+      onMedia={() => requestQuickMedia(selectedFeatureContext.feature)}
+      onAdjust={() => setEditingFeatureId(selectedFeatureId)}
+      onRoute={() => selectedFeatureContext.feature.style?.routeData
+        ? openDirections({ savedFeature: selectedFeatureContext.feature, layerId: selectedFeatureContext.layer.id, featureId: selectedFeatureId })
+        : startRouteFromFeature(selectedFeatureContext.feature, selectedFeatureContext.layer)}
+      onDelete={() => deleteFeatureFromCard(selectedFeatureContext.feature)}
+    />
+  ) : null;
+  const selectedPositions = geometryCoordinates(selectedFeatureContext?.feature.geometry);
+  const selectedPopupPosition = selectedFeatureContext?.feature.type === 'Point' ? selectedPositions[0]
+    : featureClickPosition?.featureId === selectedFeatureId ? featureClickPosition.position
+      : selectedPositions[Math.floor(selectedPositions.length / 2)];
   const storyRecords = orderStoryRecords(visibleMapData.layers.flatMap((layer) => layer.visible ? layer.features.map((feature) => ({ feature, layer })) : []), mapData.story_order);
   const selectStoryRecord = (feature, layer) => {
     setSelectedFeatureId(feature.id);
@@ -1321,28 +1461,15 @@ export default function MapEditor({ mapId }) {
     setStoryDetailId(null);
   };
   const activeCandidate = placeSearch.selectedPlace;
-  const mapPopup = isMobile ? null : draftPoint ? {
-    position: draftPoint.geometry.coordinates,
-    content: <DraftPointCard feature={draftPoint} onSave={saveFeatureDialog} onCancel={() => setFeatureDialog(null)} />,
+  const mapPopup = isMobile ? null : draftFeature ? {
+    position: geometryCoordinates(draftFeature.geometry)[0],
+    content: <DraftFeatureCard key={JSON.stringify(draftFeature.geometry)} feature={draftFeature} onSave={saveFeatureDialog} onCancel={closeFeatureDialog} />,
   } : activeCandidate?.position && placeSearch.mode === 'detail' ? {
     position: activeCandidate.position,
     content: <SearchPlaceCard search={searchPanelState} onAdd={addSearchResult} onDirections={(place) => openDirections({ to: place })} onClose={backToSearchResults} canAdd={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} />,
-  } : selectedPointContext ? {
-    position: selectedPointContext.feature.geometry.coordinates,
-    content: (
-      <PlaceFeatureCard
-        feature={selectedPointContext.feature}
-        layer={selectedPointContext.layer}
-        canEdit={canEdit && !editorHistory.busy}
-        onClose={() => setSelectedFeatureId(null)}
-        onCopyCoordinates={() => copyFeatureCoordinates(selectedPointContext.feature)}
-        onStyle={(color) => applyCardStyle(selectedPointContext.feature, color)}
-        onSave={(changes) => saveCardDetails(selectedPointContext.feature, changes)}
-        onMedia={() => requestQuickMedia(selectedPointContext.feature)}
-        onRoute={() => startRouteFromFeature(selectedPointContext.feature, selectedPointContext.layer)}
-        onDelete={() => deleteFeatureFromCard(selectedPointContext.feature)}
-      />
-    ),
+  } : selectedCard && selectedPopupPosition ? {
+    position: selectedPopupPosition,
+    content: selectedCard,
   } : null;
 
   const visibleSearchPlaces = activeCandidate?.position && !searchResults.some((place) => place.id === activeCandidate.id) ? [...searchResults, activeCandidate] : searchResults;
@@ -1380,38 +1507,46 @@ export default function MapEditor({ mapId }) {
       <MobileSheet className={sidebarCollapsed ? 'collapsed' : ''} state={sheetState} onStateChange={setSheetState} label={t('editor.layerPanel')} lang={lang} onClose={() => setSheetState('collapsed')}>
         <section className="map-meta-panel">
           <div className="editor-title-row">
-            <button className="icon-button sidebar-back" onClick={() => navigate('/')} aria-label={t('editor.backLibrary')}><ArrowLeft size={20} /></button>
             <input readOnly={!canEdit} className="map-title-input" value={mapData.name} onChange={(event) => setMapData({ ...mapData, name: event.target.value })} onBlur={(event) => updateMap({ name: event.target.value })} aria-label={t('editor.mapTitle')} />
             <div className="map-menu-anchor" data-map-menu-root>
               <button className="icon-button" onClick={() => setMoreMenu((value) => !value)} aria-label={t('editor.mapMenu')}><MoreVertical size={20} /></button>
-              {moreMenu ? <div className="popup-menu map-more-menu"><button onClick={() => { exportKml(mapData); setMoreMenu(false); }}><Download size={16} /> {t('editor.exportKml')}</button><button onClick={() => { exportGeoJson(mapData); setMoreMenu(false); }}><Database size={16} /> {t('editor.exportGeoJson')}</button><button disabled={!canEdit} onClick={saveDefaultView}><LocateFixed size={16} /> {t('editor.setDefaultView')}</button></div> : null}
+              {moreMenu ? <div className="popup-menu map-more-menu">
+                <button onClick={() => navigate('/')}><ArrowLeft size={16} /> {t('editor.backLibrary')}</button>
+                <button onClick={() => navigate('/admin')}><Database size={16} /> {t('editor.dbAdmin')}</button>
+                <button onClick={() => { exportKml(mapData); setMoreMenu(false); }}><Download size={16} /> {t('editor.exportKml')}</button>
+                <button onClick={() => { exportGeoJson(mapData); setMoreMenu(false); }}><Database size={16} /> {t('editor.exportGeoJson')}</button>
+                <button aria-pressed={trafficVisible} onClick={() => { setTrafficVisible((value) => !value); setMoreMenu(false); }}><Car size={16} /> {text('实时路况', 'Traffic')}{trafficVisible ? <Check size={15} /> : null}</button>
+                <button disabled={!canEdit} onClick={saveDefaultView}><LocateFixed size={16} /> {t('editor.setDefaultView')}</button>
+              </div> : null}
             </div>
           </div>
           <button className="sidebar-collapse-toggle" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? t('editor.expandPanel') : t('editor.collapsePanel')} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? t('editor.expandPanel') : t('editor.collapsePanel')}>{sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}</button>
-          <textarea readOnly={!canEdit} className="map-description-input" value={mapData.description} onChange={(event) => setMapData({ ...mapData, description: event.target.value })} onBlur={(event) => updateMap({ description: event.target.value })} aria-label={t('editor.mapDescription')} rows="2" />
-          <p className="save-status">
-            {canEdit ? (saving ? t('editor.saving') : t('editor.allSaved')) : t('editor.readOnly')} · {formatDate(mapData.updated_at)}
-            {realtimeStatus === 'joined' || realtimeStatus === 'connected' ? ` · ${t('editor.realtimeOn')}` : realtimeStatus === 'reconnecting' ? ` · ${t('editor.reconnecting')}` : ''}
+          <textarea readOnly={!canEdit} className="map-description-input" value={mapData.description} onChange={(event) => setMapData({ ...mapData, description: event.target.value })} onBlur={(event) => updateMap({ description: event.target.value })} aria-label={t('editor.mapDescription')} placeholder={canEdit ? text('添加地图说明', 'Add a description') : ''} rows="1" />
+          <p className="save-status" role="status">
+            <span>{text('上次编辑', 'Last edited')} {formatDate(mapData.updated_at)}</span>
+            <span className="map-save-indicator" title={`${canEdit ? ((saving || editorHistory.busy) ? t('editor.saving') : t('editor.allSaved')) : t('editor.readOnly')}${realtimeStatus === 'joined' || realtimeStatus === 'connected' ? ` · ${t('editor.realtimeOn')}` : realtimeStatus === 'reconnecting' ? ` · ${t('editor.reconnecting')}` : ''}`}>
+              {(saving || editorHistory.busy) ? <LoaderCircle size={17} className="map-save-spinner" /> : canEdit ? <Check size={17} /> : <Eye size={17} />}
+              <span className="visually-hidden">{canEdit ? ((saving || editorHistory.busy) ? t('editor.saving') : t('editor.allSaved')) : t('editor.readOnly')}</span>
+            </span>
           </p>
         </section>
         <div className="sidebar-primary-actions">
-          <button onClick={addLayer} disabled={!canEdit}><Layers size={16} /> {t('editor.addLayer')}</button>
+          <button onClick={addLayer} disabled={!canEdit || editorHistory.busy || Boolean(draftFeature)}><Layers size={16} /> {t('editor.addLayer')}</button>
           <button onClick={() => setShareDialog(true)}><Share2 size={16} /> {t('editor.share')}</button>
           <button onClick={() => { window.history.pushState({}, '', `/maps/${mapId}?preview=1`); window.location.reload(); }}><Eye size={16} /> {t('editor.preview')}</button>
         </div>
         {isMobile && placeSearch.mode ? <SearchResultsPanel search={searchPanelState} onDirections={(place) => openDirections({ to: place })} onAdd={addSearchResult} onClose={placeSearch.clear} onReturnToLayers={placeSearch.clear} canAdd={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} compact /> : null}
-        {isMobile && draftPoint ? <DraftPointCard feature={draftPoint} onSave={saveFeatureDialog} onCancel={() => setFeatureDialog(null)} /> : null}
-        {isMobile && selectedPointContext ? <PlaceFeatureCard canEdit={canEdit && !editorHistory.busy} feature={selectedPointContext.feature} layer={selectedPointContext.layer} onClose={() => setSelectedFeatureId(null)} onCopyCoordinates={() => copyFeatureCoordinates(selectedPointContext.feature)} onStyle={(color) => applyCardStyle(selectedPointContext.feature,color)} onSave={(changes) => saveCardDetails(selectedPointContext.feature,changes)} onMedia={() => requestQuickMedia(selectedPointContext.feature)} onRoute={() => startRouteFromFeature(selectedPointContext.feature,selectedPointContext.layer)} onDelete={() => deleteFeatureFromCard(selectedPointContext.feature)} /> : null}
+        {isMobile && draftFeature ? <DraftFeatureCard key={JSON.stringify(draftFeature.geometry)} feature={draftFeature} onSave={saveFeatureDialog} onCancel={closeFeatureDialog} /> : null}
+        {isMobile && selectedCard ? selectedCard : null}
         {directions.visible && !mapData.layers.some((layer) => layer.id === directions.target?.layerId) ? <section className="pending-directions-layer">
           <header><Route size={17} /><b>{text('无标题路线', 'Untitled directions')}</b><button className="icon-button" onClick={directions.close} aria-label={text('关闭路线图层', 'Close directions layer')}><X size={16} /></button></header>
           {routeEditor}
         </section> : null}
-        <LayerPanel layers={mapData.layers} selectedLayerId={selectedLayerId} selectedFeatureId={selectedFeatureId} expandedLayers={expandedLayers} onToggleExpanded={(id) => setExpandedLayers((current) => ({...current,[id]:!current[id]}))} onSelectLayer={setSelectedLayerId} onSelectFeature={selectFeature} onToggleLayer={toggleLayer} onRenameLayer={renameLayer} onDeleteLayer={removeLayer} onImport={(layer) => {setSelectedLayerId(layer.id); importRef.current?.click();}} onTable={setTableLayer} onExport={exportCsv} onFeatureStyle={(feature,layer) => setStyleTarget(styleTarget?.feature?.id === feature.id ? null : {layerId:layer.id,feature})} onLayerStyle={setLayerStyleTarget} onEditFeature={(feature,layer) => setFeatureDialog({...feature,layerId:layer.id})} onReorderLayers={(layerIds) => performEdit('Reorder layers',(expectedFingerprint) => api.reorderLayers(mapId,{layerIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onReorderFeatures={(layerId,featureIds) => performEdit('Reorder features',(expectedFingerprint) => api.reorderFeatures(mapId,{layerId,featureIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onMoveFeature={(featureId,layerId,index) => performEdit('Move feature to layer',(expectedFingerprint) => {const feature=mapDataLatestRef.current.layers.flatMap((layer)=>layer.features).find((item)=>item.id===featureId);return api.moveFeature(featureId,{layerId,index,expectedFingerprint,expectedVersion:feature?.version});})} canEdit={canEdit && !editorHistory.busy} peers={peers} user={user} t={t} lang={lang} renderDirections={(layer) => directions.visible && layer.id === directions.target?.layerId ? routeEditor : null} onEditDirections={(layer, feature) => openDirections({ savedFeature: feature, layerId: layer.id, featureId: feature.id })} renderFeatureStyle={(feature,layer) => styleTarget?.feature?.id === feature.id ? <div className="style-popover-anchor" data-style-popover-root onClick={(event)=>event.stopPropagation()}><FeatureStylePopover feature={feature} layers={contentLayers} defaultLayerId={layer.id} attachments={feature.attachments || []} onSave={saveStylePopover} onDelete={deleteStylePopoverFeature} onUploadAttachments={uploadFeatureAttachments} onDeleteAttachment={deleteFeatureAttachment} /></div> : null} />
-        <BaseMapPicker value={activeBaseMapKey} open={basePicker} onToggle={() => setBasePicker((value) => !value)} onChange={(key) => { if (canEdit) updateMap({ base_map: key }); else setMapData((current) => ({ ...current, base_map: key })); setBasePicker(false); }} traffic={trafficVisible} onTrafficChange={setTrafficVisible} lang={lang} />
-        <div className="sidebar-bottom"><button onClick={() => navigate('/admin')}><Database size={16} /> {t('editor.dbAdmin')}</button><span>Open My Map</span></div>
+        <LayerPanel layers={mapData.layers} selectedLayerId={selectedLayerId} selectedFeatureId={selectedFeatureId} expandedLayers={expandedLayers} onToggleExpanded={(id) => setExpandedLayers((current) => ({...current,[id]:!current[id]}))} onSelectLayer={setSelectedLayerId} onSelectFeature={selectFeature} onToggleLayer={toggleLayer} onRenameLayer={renameLayer} onDeleteLayer={removeLayer} onImport={(layer) => {setSelectedLayerId(layer.id); importRef.current?.click();}} onTable={setTableLayer} onExport={exportCsv} onFeatureStyle={(feature,layer) => setStyleTarget(styleTarget?.feature?.id === feature.id ? null : {layerId:layer.id,feature})} onLayerStyle={setLayerStyleTarget} onEditFeature={(feature,layer) => setFeatureDialog({...feature,layerId:layer.id})} onReorderLayers={(layerIds) => performEdit('Reorder layers',(expectedFingerprint) => api.reorderLayers(mapId,{layerIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onReorderFeatures={(layerId,featureIds) => performEdit('Reorder features',(expectedFingerprint) => api.reorderFeatures(mapId,{layerId,featureIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onMoveFeature={(featureId,layerId,index) => performEdit('Move feature to layer',(expectedFingerprint) => {const feature=mapDataLatestRef.current.layers.flatMap((layer)=>layer.features).find((item)=>item.id===featureId);return api.moveFeature(featureId,{layerId,index,expectedFingerprint,expectedVersion:feature?.version});})} canEdit={canEdit && !editorHistory.busy && !draftFeature} peers={peers} user={user} t={t} lang={lang} renderDirections={(layer) => directions.visible && layer.id === directions.target?.layerId ? routeEditor : null} onEditDirections={(layer, feature) => openDirections({ savedFeature: feature, layerId: layer.id, featureId: feature.id })} renderFeatureStyle={(feature, layer, anchorRef) => styleTarget?.feature?.id === feature.id ? <MarkerStylePopover key={feature.id} anchorRef={anchorRef} name={feature.name} color={feature.style?.color || layer.style?.color || '#1a73e8'} icon={feature.style?.icon || layer.style?.icon} inheritIcon={!feature.style?.icon} showIcons={feature.type === 'Point'} featureType={feature.type} featureStyle={feature.style} layerStyle={layer.style} busy={editorHistory.busy} lang={lang} onSave={(style) => applyStyle(feature, style, true)} onPreview={(style) => setFeatureStylePreview((current) => style ? { featureId: feature.id, style } : current?.featureId === feature.id ? null : current)} onClose={() => setStyleTarget((current) => current?.feature?.id === feature.id ? null : current)} /> : null} />
       </MobileSheet>
 
       <section className="map-workspace">
+        <BaseMapPicker value={activeBaseMapKey} open={basePicker} onToggle={() => setBasePicker((value) => !value)} onChange={(key) => { if (canEdit) updateMap({ base_map: key }); else setMapData((current) => ({ ...current, base_map: key })); setBasePicker(false); }} lang={lang} />
         <button className="mobile-panel-toggle" onClick={() => setSheetState((current) => current === 'collapsed' ? 'half' : 'collapsed')} aria-label={t('editor.layerPanel')}><Menu size={20} /></button>
         <form className="map-search-bar" onSubmit={searchPlaces}>
           <Search className="search-leading-icon" size={20} />
@@ -1419,27 +1554,29 @@ export default function MapEditor({ mapId }) {
           {searchQuery ? <button type="button" className="icon-button" onClick={placeSearch.clear} aria-label={t('editor.clearSearch')}><X size={18} /></button> : null}
           <button className="search-submit" aria-label={t('editor.search')} disabled={searching}><Search size={19} /></button>
         </form>
-        <DrawingToolbar activeTool={directions.visible ? 'route' : activeTool} canEdit={Boolean(canEdit && selectedLayer)} onTool={changeTool} canUndo={canUndo && !editorHistory.busy} canRedo={canRedo && !editorHistory.busy} onUndo={undo} onRedo={redo} />
+        <DrawingToolbar activeTool={directions.visible ? 'route' : activeTool} canEdit={Boolean(canEdit && selectedLayer && !editorHistory.busy && !draftFeature)} onTool={changeTool} canUndo={canUndo && !editorHistory.busy && !draftFeature} canRedo={canRedo && !editorHistory.busy && !draftFeature} onUndo={undo} onRedo={redo} />
         {!isMobile && (placeSearch.mode === 'results' || (placeSearch.mode === 'detail' && !activeCandidate?.position)) ? <div className="map-search-results-popover"><SearchResultsPanel search={searchPanelState} onDirections={(place) => openDirections({ to: place })} onAdd={addSearchResult} onClose={placeSearch.clear} canAdd={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} compact /></div> : null}
         {suggestionsOpen && searchSuggestions.length ? <div id="map-search-suggestions" className="map-search-suggestions" role="listbox" aria-label={text('地点联想', 'Suggested places')}>{searchSuggestions.map((suggestion, index) => <button key={suggestion.id} type="button" id={`map-suggestion-${index}`} role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseSuggestion(suggestion)}><MapPin size={18} /><span><b>{suggestion.name}</b><small>{suggestion.address || suggestion.city}</small></span></button>)}</div> : null}
-        {toolInstruction ? <div className="tool-instruction">{(activeTool === 'measure' ? measurementPoints.length : draftPoints.length) ? `${activeTool === 'measure' ? measurementPoints.length : draftPoints.length} ${text('个顶点', 'vertices')} · ` : ''}{toolInstruction}{canFinishDraft ? <button className="finish-drawing-button" onClick={() => finishDraft(activeTool, activeTool === 'measure' ? measurementPoints : draftPoints).catch(() => {})} aria-label={text('完成绘制', 'Finish drawing')}>{text('完成', 'Finish')}</button> : null}<button onClick={() => { setActiveTool('pan'); setDraftPoints([]); setHoverPoint(null); }} aria-label={text('取消绘制', 'Cancel drawing')}><X size={15} /></button></div> : null}
-        {canEdit && selectedFeatureContext && activeTool === 'pan' ? <div className="selected-edit-tip">{selectedFeatureContext.feature.type === 'Point' ? text('拖动标记以调整位置', 'Drag the marker to move this place') : selectedFeatureContext.feature.style?.routeData ? text('拖动路线以重新规划','Drag the route to replan') : text('拖动顶点以调整形状', 'Drag a vertex to reshape this feature')}</div> : null}
+        {toolInstruction ? <div className="tool-instruction">{(activeTool === 'measure' ? measurementPoints.length : draftPoints.length) ? `${activeTool === 'measure' ? measurementPoints.length : draftPoints.length} ${text('个顶点', 'vertices')} · ` : ''}{toolInstruction}{canFinishDraft ? <button className="finish-drawing-button" onClick={() => finishDraft(activeTool, activeTool === 'measure' ? measurementPoints : draftPoints).catch(() => {})} aria-label={text('完成绘制', 'Finish drawing')}>{text('完成', 'Finish')}</button> : null}<button onClick={cancelDrawing} aria-label={text('取消绘制', 'Cancel drawing')}><X size={15} /></button></div> : null}
+        {canEdit && selectedFeatureContext && editingFeatureId === selectedFeatureId && activeTool === 'pan' ? <div className="selected-edit-tip">{selectedFeatureContext.feature.type === 'Point' ? text('拖动标记以调整位置', 'Drag the marker to move this place') : text('拖动顶点以调整形状', 'Drag a vertex to reshape this feature')}<button type="button" onClick={() => setEditingFeatureId(null)}>{text('完成调整', 'Done adjusting')}</button></div> : null}
         <span className="visually-hidden" role="status" data-testid="draft-status">{draftPoints.length ? text(`已放置 ${draftPoints.length} 个绘图顶点`, `${draftPoints.length} drawing vertices placed`) : ''}</span>
         <AmapMap
           activeTool={activeTool}
           className="editor-map"
           draftMarker={draftPoint ? { position: draftPoint.geometry.coordinates, color: draftPoint.style?.color, icon: draftPoint.style?.icon || selectedLayer?.style?.icon } : null}
+          draftFeature={draftFeature && !draftPoint ? draftFeature : null}
           draftPoints={activeTool === 'measure' ? [] : draftPoints}
           hoverPoint={hoverPoint}
           mapData={visibleMapData}
-          editable={canEdit && !presenting}
+          editable={canEdit && !presenting && !editorHistory.busy}
+          editingFeatureId={!presenting && selectedFeatureContext ? editingFeatureId : null}
           trafficVisible={trafficVisible}
           measurementPoints={measurementPoints}
           measurementClosed={measurementClosed}
           onMeasurementChange={(points) => updateMeasurement(points)}
           onContextMenu={presenting ? undefined : onMapContextMenu}
           onPoiSelect={presenting ? undefined : (poi) => openPlaceDetail({...poi,source:'AMap'})}
-          poiEnabled={!presenting && activeTool === 'pan' && !directions.visible && !draftPoint}
+          poiEnabled={!presenting && activeTool === 'pan' && !directions.visible && !draftFeature}
           onViewChange={(view) => { if(view.source === 'user') placeSearch.setViewChanged(); }}
           routeAlternatives={directions.alternatives.map((route)=>({...route,selected:route.id===directions.selectedAlternativeId}))}
           routePlan={directions.selectedAlternative && directions.stops.every((stop)=>stop.position) ? {...directions.selectedAlternative,stops:directions.stops} : null}
@@ -1449,11 +1586,30 @@ export default function MapEditor({ mapId }) {
           markerColor={selectedLayer?.style.color || '#1a73e8'}
           markerIcon={selectedLayer?.style.icon || 'pin'}
           onCandidateClick={presenting ? undefined : openPlaceDetail}
-          onFeatureSelect={(feature, layer) => presenting ? (selectStoryRecord(feature, layer), setStoryDetailId(feature.id)) : selectFeature(feature, layer, false, false)}
+          onFeatureSelect={(feature, layer, position) => {
+            if (presenting) {
+              selectStoryRecord(feature, layer);
+              setStoryDetailId(feature.id);
+              return;
+            }
+            const coordinates = position ? [position.lng, position.lat] : geometryCoordinates(feature.geometry)[0];
+            if (coordinates && directions.visible && directions.pickPosition(coordinates)) return;
+            if (activeTool !== 'pan') {
+              if (coordinates) handleMapClick({ lng: coordinates[0], lat: coordinates[1] }).catch(() => {});
+              return;
+            }
+            if (editingFeatureId === feature.id) return;
+            selectFeature(feature, layer, false, false, position);
+          }}
           onFeatureGeometryChange={(feature, geometry) => persistGeometry(feature, geometry).catch(() => {})}
           onMapClick={(point,event)=>{ if (presenting) setStoryDetailId(null); else handleMapClick(point,event).catch(()=>{}); }}
           onMapDoubleClick={(point)=>handleDoubleClick(point).catch(()=>{})}
-          onMouseMove={(point) => setHoverPoint(activeTool === 'pan' || !point ? null : [point.lng, point.lat])}
+          onPolygonClose={() => finishDraft('polygon', draftPoints).catch(() => {})}
+          onShapeDrag={handleShapeDrag}
+          onMouseMove={(point) => {
+            const position = point ? [point.lng, point.lat] : null;
+            setHoverPoint(activeTool === 'pan' || !position ? null : nearPolygonStart(position) ? draftPoints[0] : position);
+          }}
           onMoveEnd={(center) => { currentCenterRef.current = center; }}
           onPopupClose={() => { if (placeSearch.mode === 'detail') backToSearchResults(); else setSelectedFeatureId(null); }}
           onReady={(controller) => { mapRef.current = controller; currentCenterRef.current = controller.getCenter(); }}
@@ -1489,11 +1645,12 @@ export default function MapEditor({ mapId }) {
 
       <input ref={importRef} type="file" className="visually-hidden" accept=".csv,.tsv,.geojson,.json,.kml,.gpx" onChange={importFile} />
       <input ref={quickMediaInputRef} type="file" className="visually-hidden" accept={MEDIA_ACCEPT} multiple onChange={handleQuickMediaSelection} aria-label="上传地点图片或视频" />
-      {featureDialog && !draftPoint ? <FeatureDialog feature={featureDialog} layers={contentLayers} defaultLayerId={selectedLayer?.id} onSave={saveFeatureDialog} onUploadAttachments={uploadFeatureAttachments} onDeleteAttachment={deleteFeatureAttachment} onDelete={(feature) => { if (window.confirm(`删除“${feature.name}”？`)) { deleteFeature(feature); setFeatureDialog(null); } }} onClose={() => setFeatureDialog(null)} /> : null}
+      {featureDialog && !draftFeature ? <FeatureDialog feature={featureDialog} layers={contentLayers} defaultLayerId={selectedLayer?.id} onSave={saveFeatureDialog} onUploadAttachments={uploadFeatureAttachments} onDeleteAttachment={deleteFeatureAttachment} onDelete={(feature) => { if (window.confirm(`删除“${feature.name}”？`)) { deleteFeature(feature); setFeatureDialog(null); } }} onClose={() => setFeatureDialog(null)} /> : null}
       {layerStyleTarget ? <LayerStyleDialog layer={layerStyleTarget} onSave={applyLayerStyle} onClose={()=>setLayerStyleTarget(null)} lang={lang} /> : null}
       {shortcutDialog ? <Modal title={text('键盘快捷键','Keyboard shortcuts')} onClose={()=>setShortcutDialog(false)}><div className="editor-shortcuts"><p>Ctrl / ⌘ + Z — {text('撤销','Undo')}</p><p>Ctrl / ⌘ + Shift + Z / Ctrl + Y — {text('重做','Redo')}</p><p>Backspace / Delete — {text('移除最后顶点或删除选中要素','Remove last point or selected feature')}</p><p>Enter — {text('完成绘制','Finish drawing')}</p><p>Escape — {text('关闭菜单或取消当前工具','Close menu or cancel current tool')}</p><p>H / M / L / P / R / D — {text('平移 / 标记 / 线 / 区域 / 路线 / 测距','Pan / Marker / Line / Shape / Directions / Measure')}</p><p>Ctrl / ⌘ + K — {text('搜索','Search')}</p><p>Alt + ↑ / ↓ — {text('在图层排序按钮上移动项目','Move focused layer or feature')}</p></div></Modal> : null}
       {shareDialog ? <ShareDialog map={mapData} share={share} onGenerate={generateShare} onClose={() => setShareDialog(false)} /> : null}
-      {tableLayer ? <DataTableDialog canEdit={canEdit} layer={mapData.layers.find((layer) => layer.id === tableLayer.id) || tableLayer} onEdit={(feature) => setFeatureDialog({ ...feature, layerId: tableLayer.id })} onDelete={(feature) => deleteFeature(feature)} onClose={() => setTableLayer(null)} /> : null}
+      {layerNameDialog ? <LayerNameDialog layer={layerNameDialog.layer} onSave={saveLayerName} onClose={() => setLayerNameDialog(null)} /> : null}
+      {tableLayer ? <DataTableDialog key={tableLayer.id} canEdit={canEdit} busy={editorHistory.busy} layer={mapData.layers.find((layer) => layer.id === tableLayer.id) || tableLayer} onSave={saveTableCell} onAddColumn={(name) => addTableColumn(tableLayer.id, name)} onDelete={(feature) => deleteFeature(feature)} onClose={() => setTableLayer(null)} /> : null}
       {toast ? <div className="toast" role="status">{toast}</div> : null}
     </main>
   );

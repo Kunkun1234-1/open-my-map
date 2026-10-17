@@ -18,7 +18,7 @@ function stopName(stop, index, lang) {
   return lang === 'en' ? `Stop ${index + 1}` : `路线点 ${index + 1}`;
 }
 
-export default function DirectionsLayerSummary({ layer, feature, canEdit, lang = 'zh', onOpen }) {
+export default function DirectionsLayerSummary({ layer, feature, canEdit, lang = 'zh', onOpen, onSelectStop }) {
   const text = (zh, en) => (lang === 'en' ? en : zh);
   const data = feature?.style?.routeData;
   const mode = data?.mode || 'driving';
@@ -65,8 +65,8 @@ export default function DirectionsLayerSummary({ layer, feature, canEdit, lang =
             </span>
             <button
               type="button"
-              onClick={onOpen}
-              disabled={!onOpen}
+              onClick={() => onSelectStop ? onSelectStop(stop, index) : onOpen?.()}
+              disabled={!onSelectStop && !onOpen}
               aria-label={text(
                 `查看路线点 ${String.fromCharCode(65 + index)}：${stopName(stop, index, lang)}`,
                 `View stop ${String.fromCharCode(65 + index)}: ${stopName(stop, index, lang)}`,

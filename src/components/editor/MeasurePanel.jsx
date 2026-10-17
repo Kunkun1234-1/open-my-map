@@ -1,12 +1,12 @@
 import { Ruler, Shapes, Trash2, Undo2, X } from 'lucide-react';
 
-function formatDistance(distance, lang) {
+export function formatDistance(distance, lang) {
   const value = Number(distance) || 0;
   const useKilometers = value >= 1000;
   return `${(useKilometers ? value / 1000 : value).toLocaleString(lang === 'en' ? 'en-US' : 'zh-CN', { maximumFractionDigits: useKilometers ? 2 : 1 })} ${lang === 'en' ? (useKilometers ? 'km' : 'm') : useKilometers ? '千米' : '米'}`;
 }
 
-function formatArea(area, lang) {
+export function formatArea(area, lang) {
   const value = Number(area) || 0;
   const useKilometers = value >= 1000000;
   return `${(useKilometers ? value / 1000000 : value).toLocaleString(lang === 'en' ? 'en-US' : 'zh-CN', { maximumFractionDigits: useKilometers ? 3 : 1 })} ${lang === 'en' ? (useKilometers ? 'km²' : 'm²') : useKilometers ? '平方千米' : '平方米'}`;

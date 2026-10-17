@@ -5,20 +5,18 @@ import {
   ArrowUp,
   ChevronDown,
   ChevronRight,
-  Download,
   GripVertical,
-  MapPin,
   MoreVertical,
+  PaintRoller,
   Palette,
-  Pencil,
   Route,
-  Shapes,
-  Table2,
-  Trash2,
   Upload,
 } from 'lucide-react';
 import DirectionsLayerSummary from './DirectionsLayerSummary.jsx';
+import MarkerIcon from './MarkerIcon.jsx';
 import './layer-panel.css';
+import './reference-layer-panel.css';
+import './reference-layer-menu.css';
 
 const DRAG_TYPE = 'application/x-open-my-map-item';
 
@@ -37,6 +35,27 @@ function reorder(ids, id, insertionIndex) {
   );
   result.splice(targetIndex, 0, source);
   return result;
+}
+
+function DefaultPinSymbol() {
+  return <svg viewBox="0 0 20 24" width="18" height="22" aria-hidden="true">
+    <path d="M10 23S2 15.6 2 9.5a8 8 0 1 1 16 0C18 15.6 10 23 10 23Z" fill="currentColor" />
+    <circle cx="10" cy="9.5" r="3" fill="#fff" />
+  </svg>;
+}
+
+function PolygonFeatureSymbol() {
+  return <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+    <polygon points="5,18 7,6 17,4 21,14 14,20" fill="currentColor" fillOpacity=".2" stroke="currentColor" strokeWidth="1.6" />
+    {[[5, 18], [7, 6], [17, 4], [21, 14], [14, 20]].map(([cx, cy]) => <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.6" fill="#fff" stroke="currentColor" strokeWidth="1.4" />)}
+  </svg>;
+}
+
+function LineFeatureSymbol() {
+  return <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+    <polyline points="4,18 9,6 14,16 20,19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    {[[4, 18], [9, 6], [14, 16], [20, 19]].map(([cx, cy]) => <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.7" fill="#fff" stroke="currentColor" strokeWidth="1.4" />)}
+  </svg>;
 }
 
 export default function LayerPanel({
@@ -79,11 +98,12 @@ export default function LayerPanel({
   const dragRef = useRef(null);
   const menuRef = useRef(null);
   const menuButtonRef = useRef(null);
+  const featureStyleButtonsRef = useRef(new Map());
 
-  const anchorMenu = (button) => {
+  const anchorMenu = (button, width = 220) => {
     const bounds = button.getBoundingClientRect();
     menuButtonRef.current = button;
-    setMenuPosition({ left: Math.max(8, bounds.right - 220), top: bounds.bottom + 4 });
+    setMenuPosition({ left: Math.max(8, bounds.right - width), top: bounds.bottom + 4 });
   };
 
   useLayoutEffect(() => {
@@ -287,7 +307,7 @@ export default function LayerPanel({
         return (
           <section
             key={layer.id}
-            className={`layer-section${directionsLayer ? ' layer-kind-directions' : ''}${sameId(selectedLayerId, layer.id) ? ' selected' : ''}${dragOver === `layer-${layer.id}` ? ' drag-over' : ''}`}
+            className={`layer-section${directionsLayer ? ' layer-kind-directions' : ''}${sameId(selectedLayerId, layer.id) ? ' selected' : ''}${!layer.visible ? ' is-hidden' : ''}${dragOver === `layer-${layer.id}` ? ' drag-over' : ''}`}
             data-layer-id={layer.id}
             data-layer-kind={directionsLayer ? 'directions' : 'features'}
             onClick={() => onSelectLayer?.(layer.id)}
@@ -371,7 +391,7 @@ export default function LayerPanel({
                   className="icon-button"
                   onClick={(event) => {
                     event.stopPropagation();
-                    anchorMenu(event.currentTarget);
+                    anchorMenu(event.currentTarget, 256);
                     setFeatureMenu(null);
                     setLayerMenu((current) => (sameId(current, layer.id) ? null : layer.id));
                   }}
@@ -385,7 +405,7 @@ export default function LayerPanel({
                   ? createPortal(
                       <div
                         ref={menuRef}
-                        className="popup-menu layer-popup-menu layer-panel-menu"
+                        className="popup-menu layer-popup-menu layer-panel-menu reference-layer-menu"
                         style={menuPosition}
                         data-layer-menu-root
                         role="menu"
@@ -402,23 +422,21 @@ export default function LayerPanel({
                             onRenameLayer?.(layer);
                           }}
                         >
-                          <Pencil size={15} />
-                          {translate('editor.rename', text('重命名', 'Rename'))}
+                          {text('图层重命名', 'Rename this layer')}
                         </button>
-                        {!directionsLayer ? (
-                          <button
-                            type="button"
-                            role="menuitem"
-                            disabled={!canEdit}
-                            onClick={() => {
-                              setLayerMenu(null);
-                              onLayerStyle?.(layer);
-                            }}
-                          >
-                            <Palette size={15} />
-                            {text('设置图层样式', 'Layer style')}
-                          </button>
-                        ) : (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={!canEdit}
+                          onClick={() => {
+                            setLayerMenu(null);
+                            onDeleteLayer?.(layer);
+                          }}
+                        >
+                          {translate('editor.deleteLayer', text('删除图层', 'Delete layer'))}
+                        </button>
+                        <div className="reference-layer-menu-separator" role="separator" />
+                        {directionsLayer ? (
                           <button
                             type="button"
                             role="menuitem"
@@ -428,31 +446,11 @@ export default function LayerPanel({
                               openDirections(event);
                             }}
                           >
-                            <Route size={15} />
                             {canEdit
                               ? text('编辑路线', 'Edit directions')
                               : text('查看路线', 'View directions')}
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          role="menuitem"
-                          disabled={!canEdit || layerIndex === 0 || !onReorderLayers}
-                          onClick={() => moveLayer(layer, -1)}
-                        >
-                          <ArrowUp size={15} />
-                          {text('上移图层', 'Move layer up')}
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          disabled={!canEdit || layerIndex === layers.length - 1 || !onReorderLayers}
-                          onClick={() => moveLayer(layer, 1)}
-                        >
-                          <ArrowDown size={15} />
-                          {text('下移图层', 'Move layer down')}
-                        </button>
-                        {!directionsLayer ? (
+                        ) : (
                           <>
                             <button
                               type="button"
@@ -462,8 +460,18 @@ export default function LayerPanel({
                                 onTable?.(layer);
                               }}
                             >
-                              <Table2 size={15} />
                               {translate('editor.openTable', text('打开数据表', 'Open data table'))}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              disabled={!canEdit}
+                              onClick={() => {
+                                setLayerMenu(null);
+                                onImport?.(layer);
+                              }}
+                            >
+                              {translate('editor.import', text('导入', 'Import'))}
                             </button>
                             <button
                               type="button"
@@ -473,23 +481,26 @@ export default function LayerPanel({
                                 onExport?.(layer);
                               }}
                             >
-                              <Download size={15} />
                               {translate('editor.exportCsv', 'Export CSV')}
                             </button>
                           </>
-                        ) : null}
+                        )}
+                        <div className="reference-layer-menu-separator" role="separator" />
                         <button
                           type="button"
                           role="menuitem"
-                          className="danger"
-                          disabled={!canEdit}
-                          onClick={() => {
-                            setLayerMenu(null);
-                            onDeleteLayer?.(layer);
-                          }}
+                          disabled={!canEdit || layerIndex === 0 || !onReorderLayers}
+                          onClick={() => moveLayer(layer, -1)}
                         >
-                          <Trash2 size={15} />
-                          {translate('editor.deleteLayer', text('删除图层', 'Delete layer'))}
+                          {text('上移图层', 'Move layer up')}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={!canEdit || layerIndex === layers.length - 1 || !onReorderLayers}
+                          onClick={() => moveLayer(layer, 1)}
+                        >
+                          {text('下移图层', 'Move layer down')}
                         </button>
                       </div>,
                       document.body,
@@ -508,6 +519,7 @@ export default function LayerPanel({
                     feature={routeFeature}
                     canEdit={canEdit}
                     lang={lang}
+                    onSelectStop={routeFeature && onSelectFeature ? (stop) => onSelectFeature(routeFeature, layer, false, true, stop.position ? { lng: stop.position[0], lat: stop.position[1] } : null) : undefined}
                     onOpen={
                       routeFeature && (onEditDirections || onSelectFeature) ? openDirections : undefined
                     }
@@ -525,15 +537,21 @@ export default function LayerPanel({
                     onLayerStyle?.(layer);
                   }}
                 >
-                  <Palette size={16} />
+                  <PaintRoller size={17} />
                   {text('图层样式', 'Layer style')}
-                  <span>{layer.features.length}</span>
                 </button>
                 {layer.features.map((feature, featureIndex) => {
                   const remoteEditor = peers.find(
                     (peer) => peer.userId !== user?.id && sameId(peer.selectedFeatureId, feature.id),
                   );
                   const active = sameId(selectedFeatureId, feature.id);
+                  const markerIcon = feature.style?.icon || layer.style?.icon;
+                  let featureStyleAnchorRef = featureStyleButtonsRef.current.get(feature.id);
+                  if (!featureStyleAnchorRef) {
+                    featureStyleAnchorRef = { current: null };
+                    featureStyleButtonsRef.current.set(feature.id, featureStyleAnchorRef);
+                  }
+                  const featureStyle = renderFeatureStyle?.(feature, layer, featureStyleAnchorRef);
                   return (
                     <div
                       key={feature.id}
@@ -588,11 +606,15 @@ export default function LayerPanel({
                         style={{ '--feature-color': feature.style?.color || layer.style?.color || '#1a73e8' }}
                       >
                         {feature.type === 'Point' ? (
-                          <MapPin size={15} />
+                          markerIcon && !['pin', 'place'].includes(markerIcon) ? (
+                            <MarkerIcon icon={markerIcon} size={18} />
+                          ) : (
+                            <DefaultPinSymbol />
+                          )
                         ) : feature.type === 'Polygon' ? (
-                          <Shapes size={15} />
+                          <PolygonFeatureSymbol />
                         ) : (
-                          <Route size={15} />
+                          <LineFeatureSymbol />
                         )}
                       </span>
                       <button
@@ -608,6 +630,7 @@ export default function LayerPanel({
                         {feature.name}
                       </button>
                       <button
+                        ref={featureStyleAnchorRef}
                         type="button"
                         className="mini-style-button"
                         disabled={!canEdit}
@@ -696,7 +719,7 @@ export default function LayerPanel({
                             )
                           : null}
                       </div>
-                      {renderFeatureStyle?.(feature, layer)}
+                      {featureStyle}
                     </div>
                   );
                 })}
@@ -723,31 +746,7 @@ export default function LayerPanel({
                       {translate('editor.import', text('导入', 'Import'))}
                     </button>
                   </div>
-                ) : (
-                  <div className="layer-footer-actions">
-                    <button
-                      type="button"
-                      disabled={!canEdit}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onImport?.(layer);
-                      }}
-                    >
-                      <Upload size={14} />
-                      {translate('editor.import', text('导入', 'Import'))}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onTable?.(layer);
-                      }}
-                    >
-                      <Table2 size={14} />
-                      {translate('editor.dataTable', text('数据表', 'Data table'))}
-                    </button>
-                  </div>
-                )}
+                ) : null}
               </div>
             ) : null}
           </section>

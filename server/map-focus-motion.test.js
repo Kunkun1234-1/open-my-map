@@ -40,8 +40,8 @@ test('instant story jumps do not change ordinary camera motion or reduced-motion
   controller.focusFeature(1);
   controller.panTo([122, 32]);
   assert.deepEqual(calls.slice(1), [
-    ['center', [121, 31], false, 350],
-    ['center', [122, 32], false, 350],
+    ['center', [121, 31], false, 1000],
+    ['center', [122, 32], false, 1000],
   ]);
   const reduced = harness(true);
   reduced.controller.focusFeature(1);

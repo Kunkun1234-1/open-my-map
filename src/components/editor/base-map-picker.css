@@ -1,0 +1,55 @@
+.editor-page .map-basemap-control {
+  position: absolute;
+  left: 24px;
+  bottom: 32px;
+  z-index: 720;
+}
+
+.map-basemap-current {
+  display: block;
+  width: 56px;
+  height: 56px;
+  padding: 3px;
+  border: 0;
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 25%);
+  cursor: pointer;
+}
+
+.map-basemap-current-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 1px;
+  background-color: #dfead9;
+  background-size: cover;
+}
+
+.map-basemap-current:hover { box-shadow: 0 2px 8px rgb(0 0 0 / 30%); }
+.map-basemap-current:focus-visible,
+.map-basemap-modes button:focus-visible { outline: 2px solid #1a73e8; outline-offset: 3px; }
+
+.map-basemap-options {
+  position: absolute;
+  left: 64px;
+  bottom: 0;
+  padding: 4px;
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: 0 1px 8px rgb(0 0 0 / 22%);
+}
+
+.map-basemap-modes { display: flex; gap: 6px; }
+.map-basemap-modes button { display: block; width: 48px; height: 48px; padding: 2px; border: 2px solid transparent; border-radius: 2px; background: transparent; cursor: pointer; }
+.map-basemap-mode-preview { display: block; width: 100%; height: 100%; border-radius: 1px; background-size: cover; background-color: #dfead9; }
+.map-basemap-modes button:hover { border-color: #bdc1c6; }
+.map-basemap-modes button.active { border-color: #1a73e8; }
+
+@media (max-width: 760px) {
+  .editor-page .map-basemap-control { left: 12px; bottom: 60px; }
+  .map-basemap-current { width: 48px; height: 48px; }
+  .map-basemap-options { left: 0; bottom: 56px; }
+  .editor-page:has(.mobile-sheet-half) .map-basemap-control { bottom: calc(52dvh + 12px); }
+  .editor-page:has(.mobile-sheet-full) .map-basemap-control { visibility: hidden; pointer-events: none; }
+}

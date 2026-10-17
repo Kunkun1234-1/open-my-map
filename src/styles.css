@@ -288,7 +288,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .amap-map-surface { position: absolute !important; inset: 0; width: 100%; height: 100%; }
 .basemap-loading-notice { position: absolute; left: 50%; top: 50%; z-index: 1100; transform: translate(-50%, -50%); padding: 8px 12px; border: 1px solid rgba(0,0,0,.12); border-radius: 4px; background: rgba(255,255,255,.94); color: #5f6368; font-size: 12px; box-shadow: 0 2px 8px rgba(60,64,67,.18); pointer-events: none; }
 .amap-feature-tooltip { max-width: 240px; overflow: hidden; padding: 5px 8px; border-radius: 3px; background: rgba(32,33,36,.92); color: #fff; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 2px 5px rgba(0,0,0,.24); pointer-events: none; }
-.amap-native-info-window { position: relative; width: max-content; max-width: calc(100vw - 28px); border-radius: 4px; background: #fff; box-shadow: 0 2px 9px rgba(0,0,0,.32); }
+.amap-native-info-window { position: relative; width: max-content; max-width: calc(100vw - 28px); border-radius: 10px; background: #fff; box-shadow: 0 3px 14px rgba(0,0,0,.28); }
 .amap-native-info-window::after { content: ''; position: absolute; left: 50%; bottom: -10px; width: 20px; height: 20px; transform: translateX(-50%) rotate(45deg); background: #fff; box-shadow: 2px 2px 4px rgba(0,0,0,.14); z-index: -1; }
 .amap-native-zoom-controls { position: absolute; right: 14px; bottom: 32px; z-index: 500; display: flex; flex-direction: column; overflow: hidden; border-radius: 2px; background: #fff; box-shadow: var(--shadow); }
 .amap-native-zoom-controls button { width: 38px; height: 38px; border: 0; border-bottom: 1px solid #ddd; background: #fff; color: #3c4043; font-size: 22px; line-height: 1; }
@@ -363,7 +363,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .feature-popup b { font-size: 14px; }
 .feature-popup p { font-size: 12px; color: #5f6368; margin: 6px 0 0; }
 .feature-popup button { margin-top: 8px; border: 0; color: var(--blue); background: transparent; padding: 0; font-size: 12px; }
-.my-maps-place-card { width: 336px; overflow: visible; position: relative; border-radius: 4px; background: #fff; color: #202124; }
+.my-maps-place-card { width: 400px; max-width: calc(100vw - 28px); overflow: visible; position: relative; border-radius: 10px; background: #fff; color: #202124; }
 .place-card-header { min-height: 104px; padding: 17px 45px 15px 16px; position: relative; }
 .place-card-header h2 { margin: 0; overflow: hidden; color: #202124; font-size: 16px; font-weight: 600; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .place-card-header p { margin: 17px 0 0; overflow: hidden; color: #3c4043; font-size: 13px; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
@@ -431,6 +431,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .place-card-actions button { width: 34px; height: 40px; margin: 0; border: 0; border-radius: 2px; background: transparent; color: #76797d; padding: 0; display: grid; place-items: center; }
 .place-card-actions button:hover, .place-card-actions button.active { background: #f1f3f4; color: var(--blue); }
 .place-card-actions button.danger:hover { color: var(--red); }
+.feature-detail-card .place-card-header { min-height: 130px; padding: 20px 48px 16px 18px; }
+.feature-detail-card .place-card-header h2 { font-size: 19px; font-weight: 700; }
+.feature-detail-card .place-card-close { top: 12px; right: 10px; }
+.feature-detail-card .place-card-footer { min-height: 46px; border-top: 0; gap: 10px; padding: 0 12px 5px 18px; flex-wrap: wrap; }
+.feature-card-metrics { flex: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; color: #777b80; font-size: 12px; font-weight: 600; }
+.feature-card-metrics span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.feature-card-metrics svg { flex-shrink: 0; }
+.feature-card-edit-actions { display: flex; justify-content: flex-end; padding: 0 15px 10px; }
+.feature-card-edit-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border: 0; border-radius: 4px; background: transparent; color: #5f6368; font-size: 12px; cursor: pointer; }
+.feature-card-edit-actions button:hover { background: #f1f3f4; color: var(--blue); }
+.selected-edit-tip button { pointer-events: auto; margin-left: 12px; padding: 5px 9px; border: 0; border-radius: 4px; background: #e8f0fe; color: var(--blue); cursor: pointer; }
 .place-card-style-picker { width: 204px; position: absolute; right: 42px; bottom: 47px; z-index: 2; border: 1px solid #e1e4e8; border-radius: 4px; background: #fff; box-shadow: 0 3px 11px rgba(0,0,0,.28); padding: 11px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
 .place-card-style-picker button { width: 28px; height: 28px; justify-self: center; border: 2px solid #fff; border-radius: 50%; background: var(--color); box-shadow: 0 0 0 1px #bdc1c6; padding: 0; }
 .place-card-style-picker button:hover { box-shadow: 0 0 0 2px var(--blue); }
