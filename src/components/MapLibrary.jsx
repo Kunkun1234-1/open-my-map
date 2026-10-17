@@ -1,4 +1,3 @@
-import UserAvatar from './UserAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import {
@@ -430,13 +429,6 @@ export default function MapLibrary() {
                 </section>
               ) : null}
             </div>
-            <button
-              className="dashboard-top-avatar"
-              onClick={() => navigate('/me')}
-              aria-label={t('dashboard.account')}
-            >
-              <UserAvatar user={user} />
-            </button>
           </div>
         </header>
         {section === 'home' ? (
@@ -444,7 +436,6 @@ export default function MapLibrary() {
             user={user}
             onCreateMap={openCreateMap}
             onCreateProject={() => openDialog('project')}
-            onSettings={() => navigate('/me#home-appearance')}
             t={t}
             slide={slide}
             setSlide={setSlide}
