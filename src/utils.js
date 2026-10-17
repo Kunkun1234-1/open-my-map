@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import { kml, gpx } from '@tmcw/togeojson';
 import { AMAP_CONFIGURED } from './amap.js';
+import { layerCsv, layerCustomGeoJsonProperties } from './table-data.js';
 
 export const AMAP_PROVIDER = '高德地图';
 
@@ -117,13 +118,13 @@ export function mapToGeoJson(map) {
     features: map.layers.flatMap((layer) => layer.features.map((feature) => ({
       type: 'Feature',
       geometry: feature.geometry,
-      properties: {
+      properties: layerCustomGeoJsonProperties(layer, feature, {
         id: feature.id,
         name: feature.name,
         description: feature.description,
         layer: layer.name,
         ...feature.style,
-      },
+      }),
     }))),
   };
 }
@@ -143,18 +144,7 @@ export function exportGeoJson(map) {
 }
 
 export function exportCsv(layer) {
-  const rows = layer.features.map((feature) => {
-    const coordinates = feature.geometry.type === 'Point' ? feature.geometry.coordinates : [];
-    return {
-      name: feature.name,
-      description: feature.description,
-      type: feature.type,
-      longitude: coordinates[0] ?? '',
-      latitude: coordinates[1] ?? '',
-      geometry: JSON.stringify(feature.geometry),
-    };
-  });
-  downloadFile(`${layer.name}.csv`, Papa.unparse(rows), 'text/csv;charset=utf-8');
+  downloadFile(`${layer.name}.csv`, `\uFEFF${layerCsv(layer)}`, 'text/csv;charset=utf-8');
 }
 
 export function exportKml(map) {

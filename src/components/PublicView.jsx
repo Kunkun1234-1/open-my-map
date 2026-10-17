@@ -4,10 +4,11 @@ import { api } from '../api.js';
 import { navigate } from '../App.jsx';
 import { LanguageSwitch, useI18n } from '../i18n/index.jsx';
 import AmapMap from './AmapMap.jsx';
-import FeatureMediaGallery from './FeatureMediaGallery.jsx';
+import FeatureCard from './editor/FeatureCard.jsx';
+import { geometryCoordinates } from './map-engine-utils.js';
 
 export default function PublicView({ token }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [mapData, setMapData] = useState(null);
   const [error, setError] = useState('');
   const [panelOpen, setPanelOpen] = useState(true);
@@ -40,9 +41,10 @@ export default function PublicView({ token }) {
   if (error) return <div className="full-error"><X size={36} /><h1>{t('editor.mapDeleted')}</h1><p>{error}</p><button className="primary-button" onClick={() => navigate('/')}>Open My Map</button></div>;
   if (!mapData) return <div className="full-loading"><span className="brand-mark"><i /><i /><i /></span><p>{t('public.loading')}</p></div>;
 
-  const popup = visibleSelectedContext?.feature.type === 'Point' ? {
-    position: visibleSelectedContext.feature.geometry.coordinates,
-    content: <div className="feature-popup"><b>{visibleSelectedContext.feature.name}</b><p>{visibleSelectedContext.feature.description || visibleSelectedContext.layer.name}</p><FeatureMediaGallery attachments={visibleSelectedContext.feature.attachments} featureName={visibleSelectedContext.feature.name} compact /></div>,
+  const positions = geometryCoordinates(visibleSelectedContext?.feature.geometry);
+  const popup = visibleSelectedContext ? {
+    position: visibleSelectedContext.position || positions[Math.floor(positions.length / 2)],
+    content: <FeatureCard key={visibleSelectedContext.feature.id} feature={visibleSelectedContext.feature} layer={visibleSelectedContext.layer} lang={lang} onClose={() => setSelectedContext(null)} onCopyCoordinates={() => navigator.clipboard.writeText(visibleSelectedContext.feature.geometry.coordinates.slice().reverse().map((value) => Number(value).toFixed(5)).join(', '))} />,
   } : null;
 
   return (
@@ -69,7 +71,7 @@ export default function PublicView({ token }) {
         className="public-map"
         mapData={renderedMapData}
         onReady={(controller) => { mapRef.current = controller; }}
-        onFeatureSelect={(feature, layer) => setSelectedContext({ feature, layer })}
+        onFeatureSelect={(feature, layer, point) => setSelectedContext({ feature, layer, position: point ? [point.lng, point.lat] : null })}
         onMapClick={() => setSelectedContext(null)}
         popup={popup}
         selectedFeatureId={visibleSelectedContext?.feature.id || null}

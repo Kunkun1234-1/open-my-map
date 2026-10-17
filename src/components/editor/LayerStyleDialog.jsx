@@ -1,16 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Circle, Flag, House, MapPin, Palette, Star, Utensils, X } from 'lucide-react';
+import { Palette, X } from 'lucide-react';
+import MarkerIconPicker from './MarkerIconPicker.jsx';
+import { getMarkerIcon } from '../marker-icons.js';
 
 const COLORS = ['#1a73e8', '#00897b', '#8e24aa', '#e85d4a', '#f9ab00', '#d93025', '#5f6368', '#039be5'];
-const ICONS = [
-  ['pin', MapPin, '图钉', 'Pin'],
-  ['circle', Circle, '圆点', 'Circle'],
-  ['star', Star, '星标', 'Star'],
-  ['flag', Flag, '旗帜', 'Flag'],
-  ['home', House, '住家', 'Home'],
-  ['food', Utensils, '餐饮', 'Food'],
-];
 const clamp = (value, minimum, maximum) =>
   Math.min(maximum, Math.max(minimum, Number.isFinite(Number(value)) ? Number(value) : maximum));
 const colorValue = (value, fallback) => (/^#[\da-f]{6}$/i.test(value || '') ? value : fallback);
@@ -25,7 +19,7 @@ export default function LayerStyleDialog({ layer, onSave, onClose, lang = 'zh' }
   const [opacity, setOpacity] = useState(clamp(layer.style?.opacity ?? 0.92, 0, 1));
   const [fillOpacity, setFillOpacity] = useState(clamp(layer.style?.fillOpacity ?? 0.28, 0, 1));
   const [icon, setIcon] = useState(
-    ICONS.some(([value]) => value === layer.style?.icon) ? layer.style.icon : 'pin',
+    getMarkerIcon(layer.style?.icon).id,
   );
   const [applyToFeatures, setApplyToFeatures] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -36,7 +30,6 @@ export default function LayerStyleDialog({ layer, onSave, onClose, lang = 'zh' }
   closeRef.current = onClose;
   busyRef.current = saving;
   const titleId = useId();
-  const iconGroupId = useId();
 
   useEffect(() => {
     const previousFocus = document.activeElement;
@@ -125,28 +118,8 @@ export default function LayerStyleDialog({ layer, onSave, onClose, lang = 'zh' }
           <fieldset disabled={saving}>
             <legend className="visually-hidden">{text('颜色和形状样式', 'Colors and shape style')}</legend>
             <div className="layer-style-icon-field">
-              <span id={iconGroupId}>{text('点标记图标', 'Point marker icon')}</span>
-              <div className="layer-style-icon-options" role="radiogroup" aria-labelledby={iconGroupId}>
-                {ICONS.map(([value, Icon, zh, en]) => (
-                  <label
-                    key={value}
-                    className={`layer-style-icon-option${icon === value ? ' selected' : ''}`}
-                    style={{ '--icon-color': color }}
-                  >
-                    <input
-                      className="visually-hidden"
-                      type="radio"
-                      name={iconGroupId}
-                      value={value}
-                      checked={icon === value}
-                      onChange={() => setIcon(value)}
-                      aria-label={text(zh, en)}
-                    />
-                    <Icon size={21} aria-hidden="true" />
-                    <small>{text(zh, en)}</small>
-                  </label>
-                ))}
-              </div>
+              <span>{text('点标记图标', 'Point marker icon')}</span>
+              <MarkerIconPicker value={icon} onChange={setIcon} color={color} lang={lang} />
             </div>
             <label className="layer-style-color-field">
               <span>{text('标记与边线颜色', 'Marker and outline color')}</span>
