@@ -39,3 +39,18 @@ test('preview bounds use visible points, routes and polygon rings and ignore mal
   assert.deepEqual(map, before);
   assert.deepEqual(visiblePreviewPositions({ layers: [{ visible: false, features: [point] }] }), []);
 });
+
+test('thumbnail bounds wrap across the date line instead of fitting almost the whole world', () => {
+  const makeMap = (coordinates) => ({ layers: [{ visible: true, features: [{ geometry: { type: 'LineString', coordinates } }] }] });
+  const wrapped = makeMap([[179, 10], [-179, 10]]);
+  const original = structuredClone(wrapped);
+  const preview = previewViewport(wrapped, 320, 140);
+  const nearby = previewViewport(makeMap([[-1, 10], [1, 10]]), 320, 140);
+  assert.ok(Math.abs(Math.abs(preview.center_lng) - 180) < 1e-8);
+  assert.ok(Math.abs(preview.zoom - nearby.zoom) < 1e-8);
+  assert.ok(preview.zoom > 7);
+  assert.deepEqual(wrapped, original);
+  const sameMeridian = previewViewport(makeMap([[-180, 10], [180, 10]]), 320, 140);
+  assert.equal(sameMeridian.zoom, 14);
+  assert.ok(Math.abs(Math.abs(sameMeridian.center_lng) - 180) < 1e-8);
+});

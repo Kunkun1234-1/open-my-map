@@ -182,6 +182,26 @@ function readExpectedVersion(req) {
   return Number.isFinite(value) ? value : null;
 }
 
+function readProjectExpectedVersion(body) {
+  if (!Object.hasOwn(body || {}, 'expectedVersion')) return undefined;
+  const raw = body.expectedVersion;
+  const validNumber = typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 1;
+  const validString = typeof raw === 'string' && /^[1-9]\d*$/.test(raw.trim()) && Number.isSafeInteger(Number(raw));
+  if (!validNumber && !validString) {
+    throw httpError('expectedVersion 必须为正整数');
+  }
+  return Number(raw);
+}
+
+function sendProjectMutationError(res, error) {
+  return res.status(error.status || 400).json({
+    error: error.message,
+    ...(error.conflict ? { conflict: true } : {}),
+    ...(error.latest ? { latest: error.latest } : {}),
+    ...(error.currentVersion !== undefined ? { currentVersion: error.currentVersion } : {}),
+  });
+}
+
 function assertVersionMatch(req, res, currentVersion, latestPayload) {
   const expected = readExpectedVersion(req);
   if (expected == null) return true;
@@ -558,9 +578,10 @@ app.post('/api/projects', requireUser, (req, res) => {
 
 app.patch('/api/projects/:projectId', requireUser, (req, res) => {
   try {
-    res.json(updateProjectMetadata(id(req.params.projectId), req.body, req.user));
+    const expectedVersion = readProjectExpectedVersion(req.body);
+    res.json(updateProjectMetadata(id(req.params.projectId), req.body, req.user, expectedVersion));
   } catch (error) {
-    res.status(error.status || 400).json({ error: error.message });
+    sendProjectMutationError(res, error);
   }
 });
 
@@ -584,15 +605,14 @@ app.get('/api/projects/:projectId/cover', requireUser, (req, res) => {
 
 app.post('/api/projects/:projectId/cover', requireUser, requireProjectCoverManager, singleCoverUpload, asyncRoute(async (req, res) => {
   const projectId = id(req.params.projectId);
+  const expectedVersion = readProjectExpectedVersion(req.body);
+  const metadata = projectMetadataInput(req.body);
   const storedName = await prepareCoverFile(req.file);
-  const project = db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId);
-  if (!project) throw httpError('项目不存在', 404);
-  if (!canEditProject(req.user, projectId)) throw httpError('仅项目所有者或管理员可修改项目封面', 403);
   const destination = coverPath(storedName);
   renameSync(req.file.path, destination);
   let updated;
   try {
-    updated = updateProjectMetadataAndCover(projectId, projectMetadataInput(req.body), req.user, storedName);
+    updated = updateProjectMetadataAndCover(projectId, metadata, req.user, storedName, expectedVersion);
   } catch (error) {
     deleteCoverFile(storedName);
     throw error;
@@ -603,19 +623,33 @@ app.post('/api/projects/:projectId/cover', requireUser, requireProjectCoverManag
 }));
 
 app.delete('/api/projects/:projectId/cover', requireUser, requireProjectCoverManager, (req, res) => {
-  const projectId = id(req.params.projectId);
-  const project = db.prepare('SELECT cover_stored_name FROM projects WHERE id = ?').get(projectId);
-  if (!project) return notFound(res, '项目不存在');
-  if (!canEditProject(req.user, projectId)) return res.status(403).json({ error: '仅项目所有者或管理员可修改项目封面' });
-  const metadata = projectMetadataInput(req.body);
-  const hasMetadata = Object.keys(metadata).length > 0;
-  if (!project.cover_stored_name && !hasMetadata) {
-    return res.json(listVisibleProjects(req.user).find((item) => item.id === projectId));
+  try {
+    const projectId = id(req.params.projectId);
+    const project = db.prepare('SELECT cover_stored_name, version FROM projects WHERE id = ?').get(projectId);
+    if (!project) return notFound(res, '项目不存在');
+    if (!canEditProject(req.user, projectId)) return res.status(403).json({ error: '仅项目所有者或管理员可修改项目封面' });
+    const expectedVersion = readProjectExpectedVersion(req.body);
+    const metadata = projectMetadataInput(req.body);
+    const hasMetadata = Object.keys(metadata).length > 0;
+    if (!project.cover_stored_name && !hasMetadata) {
+      const latest = listVisibleProjects(req.user).find((item) => item.id === projectId);
+      if (expectedVersion !== undefined && latest.version !== expectedVersion) {
+        return res.status(409).json({
+          error: '项目已被他人更新，请基于最新版本继续编辑',
+          conflict: true,
+          latest,
+          currentVersion: latest.version,
+        });
+      }
+      return res.json(latest);
+    }
+    const updated = updateProjectMetadataAndCover(projectId, metadata, req.user, null, expectedVersion);
+    deleteCoverFile(updated.previousCoverStoredName);
+    audit('reset-cover', 'project', projectId, hasMetadata ? '更新项目元数据并恢复默认封面' : '恢复默认项目封面');
+    return res.json(updated.project);
+  } catch (error) {
+    return sendProjectMutationError(res, error);
   }
-  const updated = updateProjectMetadataAndCover(projectId, metadata, req.user, null);
-  deleteCoverFile(updated.previousCoverStoredName);
-  audit('reset-cover', 'project', projectId, hasMetadata ? '更新项目元数据并恢复默认封面' : '恢复默认项目封面');
-  return res.json(updated.project);
 });
 
 app.post('/api/projects/:projectId/members', requireUser, (req, res) => {
@@ -1505,6 +1539,7 @@ app.use((error, req, res, next) => {
     ...(error.code ? { code: error.code } : {}),
     ...(error.conflict ? { conflict: true } : {}),
     ...(error.latest ? { latest: error.latest } : {}),
+    ...(error.currentVersion !== undefined ? { currentVersion: error.currentVersion } : {}),
     ...(error.currentFingerprint ? { currentFingerprint: error.currentFingerprint } : {}),
   });
 });

@@ -3,6 +3,7 @@ import { Image } from 'lucide-react';
 import { api } from '../../api.js';
 import { coverStyle } from './helpers.js';
 import MapCardPreview from './MapCardPreview.jsx';
+import './asset-feedback.css';
 
 const MAX_COVER_SIZE = 10 * 1024 * 1024;
 const COVER_TYPES = new Set([
@@ -23,6 +24,8 @@ export default function CoverField({
   disabled,
 }) {
   const [loadedCoverUrl, setLoadedCoverUrl] = useState('');
+  const [coverLoadError, setCoverLoadError] = useState(false);
+  const [coverRequestVersion, setCoverRequestVersion] = useState(0);
   const [previewUrl, setPreviewUrl] = useState('');
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
@@ -31,6 +34,7 @@ export default function CoverField({
     let active = true;
     let objectUrl = '';
     setLoadedCoverUrl('');
+    setCoverLoadError(false);
     if (!entity.cover_url) return undefined;
 
     api
@@ -41,14 +45,17 @@ export default function CoverField({
         else URL.revokeObjectURL(objectUrl);
       })
       .catch(() => {
-        if (active) setLoadedCoverUrl('');
+        if (active) {
+          setLoadedCoverUrl('');
+          setCoverLoadError(true);
+        }
       });
 
     return () => {
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [entity.cover_url, entity.id]);
+  }, [coverRequestVersion, entity.cover_url, entity.id]);
 
   useEffect(() => {
     let objectUrl = '';
@@ -115,6 +122,17 @@ export default function CoverField({
       >
         {showMapPreview ? <MapCardPreview key={`${entity.id}:${entity.version}`} mapId={entity.id} t={t} /> : null}
       </div>
+      {coverLoadError && entity.cover_url && value.mode !== 'upload' && value.mode !== 'reset' ? (
+        <div className="dashboard-asset-feedback dashboard-asset-feedback--inline" role="alert">
+          <span>{t('dashboard.assetLoadFailed')}</span>
+          <button
+            type="button"
+            onClick={() => setCoverRequestVersion((version) => version + 1)}
+          >
+            {t('dashboard.retryImage')}
+          </button>
+        </div>
+      ) : null}
       <p className="dashboard-project-delete-hint">
         {t('dashboard.coverHint')}
         {kind === 'maps' ? ` ${t('dashboard.mapCoverHint')}` : ''}

@@ -5,6 +5,7 @@ import LibraryDialog from './LibraryDialog.jsx';
 import { coverStyle } from './helpers.js';
 import { cardCoverMode } from './mapPreview.js';
 import MapCardPreview from './MapCardPreview.jsx';
+import './asset-feedback.css';
 
 const MAX_COVER_SIZE = 10 * 1024 * 1024;
 const COVER_TYPES = new Set([
@@ -28,6 +29,8 @@ export default function CardCover({
   onToast,
 }) {
   const [loadedCoverUrl, setLoadedCoverUrl] = useState('');
+  const [coverLoadError, setCoverLoadError] = useState(false);
+  const [coverRequestVersion, setCoverRequestVersion] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
@@ -51,6 +54,7 @@ export default function CardCover({
     let active = true;
     let objectUrl = '';
     setLoadedCoverUrl('');
+    setCoverLoadError(false);
     if (!entity.cover_url) return undefined;
 
     api
@@ -61,14 +65,17 @@ export default function CardCover({
         else URL.revokeObjectURL(objectUrl);
       })
       .catch(() => {
-        if (active) setLoadedCoverUrl('');
+        if (active) {
+          setLoadedCoverUrl('');
+          setCoverLoadError(true);
+        }
       });
 
     return () => {
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [entity.cover_url, entity.id, kind]);
+  }, [coverRequestVersion, entity.cover_url, entity.id, kind]);
 
   useEffect(
     () => () => {
@@ -201,6 +208,17 @@ export default function CardCover({
         onClick={onOpen}
         aria-label={openLabel}
       />
+      {coverLoadError && entity.cover_url ? (
+        <div className="dashboard-asset-feedback dashboard-asset-feedback--cover" role="alert">
+          <span>{t('dashboard.assetLoadFailed')}</span>
+          <button
+            type="button"
+            onClick={() => setCoverRequestVersion((version) => version + 1)}
+          >
+            {t('dashboard.retryImage')}
+          </button>
+        </div>
+      ) : null}
       {editable && !disabled ? (
         <button
           type="button"

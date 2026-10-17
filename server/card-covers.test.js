@@ -168,6 +168,14 @@ test('protected project and map card covers persist, replace and reset safely', 
       const baseline = await request('POST', projectCoverEndpoint, owner.sessionId, uploadBody(png, 'baseline.png'));
       assert.equal(baseline.status, 200);
       const baselineStored = storedName(baseline.value.cover_url);
+      assert.ok(Number.isInteger(baseline.value.version));
+
+      const invalidVersion = await request('POST', projectCoverEndpoint, owner.sessionId, uploadBody(gif, 'invalid-version.gif', 'image/gif', 'file', {
+        name: 'Must not persist', expectedVersion: '0',
+      }));
+      assert.equal(invalidVersion.status, 400);
+      assert.deepEqual(readdirSync(coverDir), [baselineStored]);
+      assert.deepEqual(readdirSync(path.join(directory, 'upload-temp')), []);
 
       const invalid = await request('POST', projectCoverEndpoint, owner.sessionId, uploadBody(gif, 'invalid.gif', 'image/gif', 'file', {
         name: '   ', description: 'Must not persist',
@@ -181,33 +189,71 @@ test('protected project and map card covers persist, replace and reset safely', 
       assert.deepEqual(readdirSync(path.join(directory, 'upload-temp')), []);
 
       const combined = await request('POST', projectCoverEndpoint, owner.sessionId, uploadBody(gif, 'combined.gif', 'image/gif', 'file', {
-        name: '  Combined project  ', description: 'Combined description',
+        name: '  Combined project  ', description: 'Combined description', expectedVersion: String(baseline.value.version),
       }));
       assert.equal(combined.status, 200);
       assert.equal(combined.value.name, 'Combined project');
       assert.equal(combined.value.description, 'Combined description');
       assert.ok(combined.value.cover_url);
       assert.notEqual(combined.value.cover_url, baseline.value.cover_url);
+      assert.equal(combined.value.version, baseline.value.version + 1);
       assert.equal(existsSync(path.join(coverDir, baselineStored)), false);
+      const combinedStored = storedName(combined.value.cover_url);
+
+      const staleUpload = await request('POST', projectCoverEndpoint, owner.sessionId, uploadBody(png, 'stale-project.png', 'image/png', 'file', {
+        name: 'Stale project', description: 'Must not persist', expectedVersion: String(baseline.value.version),
+      }));
+      assert.equal(staleUpload.status, 409);
+      assert.equal(staleUpload.value.conflict, true);
+      assert.equal(staleUpload.value.currentVersion, combined.value.version);
+      assert.equal(staleUpload.value.latest.name, combined.value.name);
+      assert.deepEqual(readdirSync(coverDir), [combinedStored]);
+      assert.deepEqual(readdirSync(path.join(directory, 'upload-temp')), []);
 
       const invalidReset = await request('DELETE', projectCoverEndpoint, owner.sessionId, {
-        name: '', description: 'Must not replace combined metadata',
+        name: '', description: 'Must not replace combined metadata', expectedVersion: combined.value.version,
       });
       assert.equal(invalidReset.status, 400);
+      const invalidResetVersion = await request('DELETE', projectCoverEndpoint, owner.sessionId, {
+        name: 'Must not persist', expectedVersion: 'invalid',
+      });
+      assert.equal(invalidResetVersion.status, 400);
       const afterInvalidReset = (await request('GET', '/api/projects', owner.sessionId)).value.find((item) => item.id === project.id);
       assert.equal(afterInvalidReset.name, 'Combined project');
       assert.equal(afterInvalidReset.description, 'Combined description');
       assert.equal(afterInvalidReset.cover_url, combined.value.cover_url);
       assert.ok(existsSync(path.join(coverDir, storedName(combined.value.cover_url))));
 
+      const staleReset = await request('DELETE', projectCoverEndpoint, owner.sessionId, {
+        name: 'Stale reset', description: 'Must not persist', expectedVersion: baseline.value.version,
+      });
+      assert.equal(staleReset.status, 409);
+      assert.equal(staleReset.value.currentVersion, combined.value.version);
+      assert.ok(existsSync(path.join(coverDir, combinedStored)));
+
       const reset = await request('DELETE', projectCoverEndpoint, owner.sessionId, {
-        name: 'Reset project', description: 'Reset description',
+        name: 'Reset project', description: 'Reset description', expectedVersion: combined.value.version,
       });
       assert.equal(reset.status, 200);
       assert.equal(reset.value.name, 'Reset project');
       assert.equal(reset.value.description, 'Reset description');
       assert.equal(reset.value.cover_url, null);
+      assert.equal(reset.value.version, combined.value.version + 1);
       assert.deepEqual(readdirSync(coverDir), []);
+
+      const metadataWithoutCover = await request('DELETE', projectCoverEndpoint, owner.sessionId, {
+        description: 'Metadata without a cover', expectedVersion: reset.value.version,
+      });
+      assert.equal(metadataWithoutCover.status, 200);
+      assert.equal(metadataWithoutCover.value.description, 'Metadata without a cover');
+      assert.equal(metadataWithoutCover.value.version, reset.value.version + 1);
+      assert.equal(metadataWithoutCover.value.cover_url, null);
+
+      const staleNoOp = await request('DELETE', projectCoverEndpoint, owner.sessionId, {
+        expectedVersion: reset.value.version,
+      });
+      assert.equal(staleNoOp.status, 409);
+      assert.equal(staleNoOp.value.currentVersion, metadataWithoutCover.value.version);
     });
 
     const map = (await request('POST', '/api/maps', owner.sessionId, {

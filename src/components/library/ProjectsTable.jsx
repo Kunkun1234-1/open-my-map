@@ -27,6 +27,8 @@ export default function ProjectsTable({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [latestConflict, setLatestConflict] = useState(null);
   const nameRef = useRef(null);
   const descriptionRef = useRef(null);
   const canManage = (project) => user?.role === 'admin' || project.my_role === 'owner';
@@ -34,6 +36,8 @@ export default function ProjectsTable({
     if (busy || !canManage(project)) return;
     setError('');
     setRefreshFailed(false);
+    setConflict(false);
+    setLatestConflict(null);
     setForm({ name: project.name, description: project.description || '' });
     setCoverChange({ mode: 'keep' });
     setFocusField(field);
@@ -46,6 +50,8 @@ export default function ProjectsTable({
     setCoverChange({ mode: 'keep' });
     setError('');
     setRefreshFailed(false);
+    setConflict(false);
+    setLatestConflict(null);
   };
   const remove = (project) => {
     if (busy || !canManage(project)) return;
@@ -80,7 +86,7 @@ export default function ProjectsTable({
   };
   const submit = async (event) => {
     event.preventDefault();
-    if (busy || (editing && coverChange.mode === 'invalid')) return;
+    if (busy || (editing && (coverChange.mode === 'invalid' || conflict))) return;
     setBusy(true);
     setError('');
     try {
@@ -88,6 +94,7 @@ export default function ProjectsTable({
         const metadata = {
           name: form.name.trim(),
           description: form.description.trim(),
+          expectedVersion: editing.version,
         };
         if (coverChange.mode === 'upload') {
           await api.uploadCover(
@@ -111,6 +118,32 @@ export default function ProjectsTable({
       setDeleting(null);
       setCoverChange({ mode: 'keep' });
       await refreshAfterMutation(successKey);
+    } catch (requestError) {
+      if (editing && (requestError.status === 409 || requestError.conflict)) {
+        setConflict(true);
+        setLatestConflict(requestError.latest || null);
+        setError(t('dashboard.projectConflict'));
+      } else {
+        setError(requestError.message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const refreshEditingVersion = async () => {
+    if (!editing || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const latest = (await api.projects()).find((project) => project.id === editing.id);
+      if (!latest) throw new Error(t('dashboard.projectRefreshFailed'));
+      setForm((current) => ({
+        name: current.name === editing.name ? latest.name : current.name,
+        description: current.description === (editing.description || '') ? latest.description || '' : current.description,
+      }));
+      setEditing(latest);
+      setConflict(false);
+      setLatestConflict(null);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -295,7 +328,13 @@ export default function ProjectsTable({
       ) : null}
       {editing || deleting ? <LibraryDialog title={t(editing ? 'dashboard.editProject' : 'dashboard.deleteProject')} onClose={close} closeLabel={t('common.close')} initialFocusRef={editing ? (focusField === 'name' ? nameRef : descriptionRef) : undefined}>
         <form className="dialog-form" onSubmit={submit}>
-          {error ? <div className="inline-error" role="alert">{error}</div> : null}
+          {error ? <div className="inline-error" role="alert">
+            <span>{error}</span>
+            {editing && conflict ? <>
+              {latestConflict ? <p>{t('dashboard.mapLatestValues', { name: latestConflict.name, description: latestConflict.description || '—' })}</p> : null}
+              <button type="button" className="text-button" disabled={busy} onClick={refreshEditingVersion}>{t('dashboard.reloadMapVersion')}</button>
+            </> : null}
+          </div> : null}
           {editing ? <>
             <label>{t('library.projectName')}<input ref={nameRef} required maxLength={120} disabled={busy} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
             <label>{t('library.projectDesc')}<textarea ref={descriptionRef} rows={4} maxLength={2000} disabled={busy} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
@@ -306,7 +345,7 @@ export default function ProjectsTable({
           </>}
           <footer className="dialog-actions">
             <button type="button" className="text-button" onClick={close} disabled={busy}>{t('common.cancel')}</button>
-            <button className={`dashboard-primary${deleting ? ' dashboard-danger-button' : ''}`} disabled={busy || (editing ? !form.name.trim() || coverChange.mode === 'invalid' : (deleting.total_map_count ?? deleting.map_count) > 0)}>{t(busy ? 'dashboard.projectWorking' : editing ? 'common.save' : 'common.delete')}</button>
+            <button className={`dashboard-primary${deleting ? ' dashboard-danger-button' : ''}`} disabled={busy || (editing ? !form.name.trim() || coverChange.mode === 'invalid' || conflict || !canManage(editing) : (deleting.total_map_count ?? deleting.map_count) > 0)}>{t(busy ? 'dashboard.projectWorking' : editing ? 'common.save' : 'common.delete')}</button>
           </footer>
         </form>
       </LibraryDialog> : null}

@@ -74,7 +74,12 @@ npm start
 | `DB_PATH` | `data/open-my-map.sqlite` | SQLite 数据库文件 |
 | `UPLOAD_DIR` | `data/uploads` | 地点附件保存目录 |
 | `UPLOAD_TEMP_DIR` | `data/.upload-tmp` | 上传临时目录 |
+| `COVER_DIR` | `data/covers`（`UPLOAD_DIR` 的同级 `covers` 目录） | 地图与项目的自定义封面 |
+| `AVATAR_DIR` | `data/avatars` | 用户上传的头像 |
+| `HOME_BACKGROUND_DIR` | `data/home-backgrounds` | 用户上传的主页背景 |
 | `SESSION_TTL_DAYS` | `30` | 登录会话有效天数 |
 | `OPEN_MY_MAP_ADMIN_KEY` | 本地开发默认值 | 管理 API 密钥 |
 
-部署时使用持久化存储保存数据库和附件，使用正式账号替换演示账号及默认管理密钥，并设置 HTTPS 以支持浏览器定位等能力。`.env.local`、数据库文件和上传目录均已列入 `.gitignore`。
+部署时需同时持久化 `DB_PATH`、`UPLOAD_DIR`、`COVER_DIR`、`AVATAR_DIR` 和 `HOME_BACKGROUND_DIR`，备份与恢复也应包含这些目录；`UPLOAD_TEMP_DIR` 只保存上传临时文件。容器重建时仅保留数据库和地点附件目录，会丢失封面、头像及主页背景文件。可将上述目录显式配置到同一个持久化卷下，例如 `/storage/open-my-map/`；服务端不会自动读取 `.env.local`，这些变量需由启动环境或容器配置传入。
+
+使用正式账号替换演示账号及默认管理密钥，并设置 HTTPS 以支持浏览器定位等能力。`.env.local`、数据库文件和默认上传目录均已列入 `.gitignore`。

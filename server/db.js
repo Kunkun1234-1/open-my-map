@@ -112,6 +112,7 @@ db.exec(`
     description TEXT NOT NULL DEFAULT '',
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -222,6 +223,7 @@ function ensureVersionColumn(table) {
 ensureVersionColumn('maps');
 ensureVersionColumn('layers');
 ensureVersionColumn('features');
+ensureVersionColumn('projects');
 
 const layerColumns = db.prepare('PRAGMA table_info(layers)').all();
 const migrateLayerKinds = !layerColumns.some((column) => column.name === 'kind');
@@ -525,7 +527,7 @@ export function adminStats() {
 
 export function listProjects() {
   return db.prepare(`
-    SELECT p.id, p.name, p.description, p.owner_user_id, p.status, p.created_at,
+    SELECT p.id, p.name, p.description, p.owner_user_id, p.status, p.version, p.created_at,
       p.cover_stored_name,
       MAX(p.updated_at, COALESCE((SELECT MAX(m.updated_at) FROM maps m WHERE m.project_id = p.id AND m.deleted_at IS NULL), p.updated_at)) AS updated_at,
       u.name AS owner_name, u.email AS owner_email,
@@ -555,6 +557,7 @@ export function listLibraryProjects() {
       name: project.name,
       description: project.description,
       status: project.status,
+      version: project.version,
       created_at: project.created_at,
       updated_at: project.updated_at,
       owner_name: project.owner_name,
@@ -732,6 +735,15 @@ function projectError(message, status = 400) {
   return err;
 }
 
+function projectConflict(projectId, actor) {
+  const latest = projectListItem(projectId, actor);
+  const err = projectError('项目已被他人更新，请基于最新版本继续编辑', 409);
+  err.conflict = true;
+  err.latest = latest;
+  err.currentVersion = latest?.version ?? null;
+  return err;
+}
+
 function validateProjectMetadata(changes, current = null) {
   const hasName = Object.hasOwn(changes || {}, 'name');
   const hasDescription = Object.hasOwn(changes || {}, 'description');
@@ -771,22 +783,26 @@ function projectListItem(projectId, actor) {
   return { ...project, my_role: myRole || null };
 }
 
-function updateProjectRecord(projectId, changes, actor, { coverStoredName, requireMetadata = false } = {}) {
-  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
-  if (!project) throw projectError('项目不存在', 404);
-  if (!canEditProject(actor, projectId)) throw projectError('仅项目所有者或数据管理员可修改项目', 403);
-
-  const hasMetadata = Object.hasOwn(changes || {}, 'name') || Object.hasOwn(changes || {}, 'description');
-  if (requireMetadata && !hasMetadata) throw projectError('请提供要修改的项目名称或描述');
-  const metadata = hasMetadata
-    ? validateProjectMetadata(changes, project)
-    : { name: project.name, description: project.description };
-  const nextCoverStoredName = coverStoredName === undefined ? project.cover_stored_name : coverStoredName;
-
-  db.exec('BEGIN');
+function updateProjectRecord(projectId, changes, actor, { coverStoredName, requireMetadata = false, expectedVersion } = {}) {
+  db.exec('BEGIN IMMEDIATE');
   try {
-    db.prepare('UPDATE projects SET name = ?, description = ?, cover_stored_name = ?, updated_at = ? WHERE id = ?')
-      .run(metadata.name, metadata.description, nextCoverStoredName, iso(), projectId);
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) throw projectError('项目不存在', 404);
+    if (!canEditProject(actor, projectId)) throw projectError('仅项目所有者或数据管理员可修改项目', 403);
+    if (expectedVersion !== undefined && project.version !== expectedVersion) throw projectConflict(projectId, actor);
+
+    const hasMetadata = Object.hasOwn(changes || {}, 'name') || Object.hasOwn(changes || {}, 'description');
+    if (requireMetadata && !hasMetadata) throw projectError('请提供要修改的项目名称或描述');
+    const metadata = hasMetadata
+      ? validateProjectMetadata(changes, project)
+      : { name: project.name, description: project.description };
+    const nextCoverStoredName = coverStoredName === undefined ? project.cover_stored_name : coverStoredName;
+    const result = db.prepare(`
+      UPDATE projects
+      SET name = ?, description = ?, cover_stored_name = ?, updated_at = ?, version = version + 1
+      WHERE id = ? AND version = ?
+    `).run(metadata.name, metadata.description, nextCoverStoredName, iso(), projectId, project.version);
+    if (result.changes !== 1) throw projectConflict(projectId, actor);
     const updatedProject = projectListItem(projectId, actor);
     db.exec('COMMIT');
     return {
@@ -800,14 +816,14 @@ function updateProjectRecord(projectId, changes, actor, { coverStoredName, requi
   }
 }
 
-export function updateProjectMetadata(projectId, changes, actor) {
-  const result = updateProjectRecord(projectId, changes, actor, { requireMetadata: true });
+export function updateProjectMetadata(projectId, changes, actor, expectedVersion) {
+  const result = updateProjectRecord(projectId, changes, actor, { requireMetadata: true, expectedVersion });
   audit('update', 'project', projectId, `更新项目元数据“${result.project.name}”`);
   return result.project;
 }
 
-export function updateProjectMetadataAndCover(projectId, changes, actor, coverStoredName) {
-  return updateProjectRecord(projectId, changes, actor, { coverStoredName });
+export function updateProjectMetadataAndCover(projectId, changes, actor, coverStoredName, expectedVersion) {
+  return updateProjectRecord(projectId, changes, actor, { coverStoredName, expectedVersion });
 }
 
 export function deleteEmptyProject(projectId, actor) {

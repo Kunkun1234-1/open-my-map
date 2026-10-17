@@ -100,6 +100,7 @@ test('authenticated project metadata and deletion APIs enforce ownership and pre
       assert.equal(created.status, 201);
       assert.equal(created.value.name, 'Trimmed create');
       assert.equal(created.value.description, 'Valid');
+      assert.equal(created.value.version, 1);
       assert.equal(await request('DELETE', `/api/projects/${created.value.id}`, owner.sessionId).then((result) => result.status), 204);
     });
 
@@ -119,12 +120,68 @@ test('authenticated project metadata and deletion APIs enforce ownership and pre
       assert.equal(result.status, 200);
       assert.equal(result.value.name, 'Renamed project');
       assert.equal(result.value.description, 'A useful description');
+      assert.equal(result.value.version, project.version + 1);
       assert.equal(result.value.my_role, 'owner');
       assert.equal(result.value.map_count, 0);
       assert.equal(result.value.member_count, 3);
       const listed = (await request('GET', '/api/projects', owner.sessionId)).value.find((item) => item.id === project.id);
       assert.equal(listed.name, 'Renamed project');
       assert.equal(listed.description, 'A useful description');
+      assert.equal(listed.version, result.value.version);
+    });
+
+    await t.test('project metadata rejects invalid and stale expected versions without overwriting newer data', async () => {
+      const endpoint = `/api/projects/${project.id}`;
+      const before = (await request('GET', '/api/projects', owner.sessionId)).value.find((item) => item.id === project.id);
+      for (const expectedVersion of [0, -1, 1.5, '', 'not-a-version', true]) {
+        const invalid = await request('PATCH', endpoint, owner.sessionId, { name: 'Must not persist', expectedVersion });
+        assert.equal(invalid.status, 400);
+      }
+      const first = await request('PATCH', endpoint, owner.sessionId, {
+        name: 'Newest project name',
+        description: 'Newest project description',
+        expectedVersion: before.version,
+      });
+      assert.equal(first.status, 200);
+      assert.equal(first.value.version, before.version + 1);
+
+      const stale = await request('PATCH', endpoint, owner.sessionId, {
+        name: 'Stale project name',
+        description: 'Stale project description',
+        expectedVersion: before.version,
+      });
+      assert.equal(stale.status, 409);
+      assert.equal(stale.value.conflict, true);
+      assert.equal(stale.value.currentVersion, first.value.version);
+      assert.equal(stale.value.latest.id, project.id);
+      assert.equal(stale.value.latest.name, first.value.name);
+      assert.equal(stale.value.latest.description, first.value.description);
+      assert.equal(stale.value.latest.my_role, 'owner');
+
+      const after = (await request('GET', '/api/projects', owner.sessionId)).value.find((item) => item.id === project.id);
+      assert.equal(after.name, first.value.name);
+      assert.equal(after.description, first.value.description);
+      assert.equal(after.version, first.value.version);
+    });
+
+    await t.test('concurrent project edits with one version allow exactly one winner', async () => {
+      const raced = await createProject('Concurrent project');
+      const endpoint = `/api/projects/${raced.id}`;
+      const [left, right] = await Promise.all([
+        request('PATCH', endpoint, owner.sessionId, { name: 'Left edit', expectedVersion: raced.version }),
+        request('PATCH', endpoint, owner.sessionId, { name: 'Right edit', expectedVersion: raced.version }),
+      ]);
+      const winner = [left, right].find((result) => result.status === 200);
+      const conflict = [left, right].find((result) => result.status === 409);
+      assert.ok(winner);
+      assert.ok(conflict);
+      assert.equal(winner.value.version, raced.version + 1);
+      assert.equal(conflict.value.currentVersion, winner.value.version);
+      assert.equal(conflict.value.latest.name, winner.value.name);
+      const persisted = (await request('GET', '/api/projects', owner.sessionId)).value.find((item) => item.id === raced.id);
+      assert.equal(persisted.name, winner.value.name);
+      assert.equal(persisted.version, winner.value.version);
+      assert.equal((await request('DELETE', endpoint, owner.sessionId)).status, 204);
     });
 
     await t.test('editors and viewers cannot update or delete projects', async () => {
