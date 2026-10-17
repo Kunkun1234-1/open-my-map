@@ -1,49 +1,40 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import {
   CalendarDays,
   Folder,
-  MoreHorizontal,
+  Eye,
+  Pencil,
   RotateCcw,
   Star,
   Trash2,
 } from 'lucide-react';
-import { canManageMap, coverStyle, relativeDate } from './helpers.js';
+import CardCover from './CardCover.jsx';
+import { relativeDate } from './helpers.js';
 
 export default function MapCard({
   map,
   index,
-  user,
   lang,
   t,
   trashed,
+  editable,
+  deletable,
+  disabled,
   onOpen,
   onPreview,
   onFavorite,
   onTrash,
   onRestore,
   onDelete,
+  onEdit,
+  onRefresh,
+  onToast,
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const menuRef = useRef(null);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const dismiss = (event) => {
-      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
-    };
-    const escape = (event) => {
-      if (event.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', dismiss);
-    document.addEventListener('keydown', escape);
-    return () => {
-      document.removeEventListener('pointerdown', dismiss);
-      document.removeEventListener('keydown', escape);
-    };
-  }, [menuOpen]);
+  const controlsDisabled = disabled || busy;
   const act = async (action) => {
+    if (controlsDisabled || !action) return;
     setBusy(true);
-    setMenuOpen(false);
     try {
       await action();
     } finally {
@@ -56,29 +47,22 @@ export default function MapCard({
       data-testid={`map-card-${map.id}`}
     >
       <div className="dashboard-card-cover">
-        <button
-          className="dashboard-map-cover"
-          style={coverStyle(map, index)}
-          onClick={trashed ? () => act(onRestore) : onOpen}
-          aria-label={
+        <CardCover
+          entity={map}
+          kind="maps"
+          index={index}
+          t={t}
+          editable={false}
+          disabled={controlsDisabled || (trashed && !deletable)}
+          onOpen={trashed ? () => act(onRestore) : onOpen}
+          openLabel={
             trashed
               ? t('dashboard.restore')
               : t('library.openMap', { name: map.name })
           }
+          onRefresh={onRefresh}
+          onToast={onToast}
         />
-        {!trashed ? (
-          <button
-            className={`dashboard-star${map.is_favorite ? ' is-favorite' : ''}`}
-            onClick={() => act(onFavorite)}
-            aria-label={t(
-              map.is_favorite ? 'dashboard.unfavorite' : 'dashboard.favorite',
-            )}
-            aria-pressed={Boolean(map.is_favorite)}
-            disabled={busy}
-          >
-            <Star size={16} fill={map.is_favorite ? 'currentColor' : 'none'} />
-          </button>
-        ) : null}
       </div>
       <div className="dashboard-card-details">
         <div className="dashboard-card-title-row">
@@ -86,60 +70,22 @@ export default function MapCard({
             className="dashboard-map-title"
             onClick={trashed ? () => act(onRestore) : onOpen}
             title={map.name}
+            disabled={controlsDisabled || (trashed && !deletable)}
           >
             {map.name}
           </button>
-          <div className="dashboard-card-menu-anchor" ref={menuRef}>
+          {!trashed ? (
             <button
+              type="button"
               className="dashboard-more"
-              onClick={() => setMenuOpen((value) => !value)}
-              aria-label={t('library.mapActions')}
-              aria-expanded={menuOpen}
-              disabled={busy}
+              disabled={controlsDisabled}
+              onClick={onPreview}
+              title={t('library.previewMap')}
+              aria-label={t('library.previewMap')}
             >
-              <MoreHorizontal size={17} />
+              <Eye size={16} />
             </button>
-            {menuOpen ? (
-              <div
-                className="dashboard-card-menu"
-                aria-label={t('library.mapActions')}
-              >
-                {trashed ? (
-                  <>
-                    <button onClick={() => act(onRestore)}>
-                      <RotateCcw size={14} />
-                      {t('dashboard.restore')}
-                    </button>
-                    <button className="danger" onClick={() => act(onDelete)}>
-                      <Trash2 size={14} />
-                      {t('dashboard.deleteForever')}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button onClick={onOpen}>
-                      {t('library.openInEditor')}
-                    </button>
-                    <button onClick={onPreview}>
-                      {t('library.previewMap')}
-                    </button>
-                    <button onClick={() => act(onFavorite)}>
-                      {t(
-                        map.is_favorite
-                          ? 'dashboard.unfavorite'
-                          : 'dashboard.favorite',
-                      )}
-                    </button>
-                    {canManageMap(map, user) ? (
-                      <button className="danger" onClick={() => act(onTrash)}>
-                        {t('library.moveToTrash')}
-                      </button>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            ) : null}
-          </div>
+          ) : null}
         </div>
         <p className="dashboard-card-description" title={map.description || ''}>
           {map.description ||
@@ -158,6 +104,34 @@ export default function MapCard({
               date: relativeDate(map.updated_at, lang),
             })}
           </span>
+        </div>
+        <div className="dashboard-project-row-actions">
+          {!trashed ? (
+            <>
+              <button type="button" className="dashboard-action-icon" disabled={controlsDisabled}
+                title={t(map.is_favorite ? 'dashboard.unfavorite' : 'dashboard.favorite')}
+                aria-label={t(map.is_favorite ? 'dashboard.unfavorite' : 'dashboard.favorite')}
+                aria-pressed={Boolean(map.is_favorite)} onClick={() => act(onFavorite)}>
+                <Star size={14} fill={map.is_favorite ? 'currentColor' : 'none'} />
+              </button>
+              <button type="button" className="dashboard-action-icon" disabled={controlsDisabled || !editable}
+                title={t(editable ? 'dashboard.editMap' : 'dashboard.mapEditPermission')}
+                aria-label={t('dashboard.editMapNamed', { name: map.name })} onClick={() => act(onEdit)}>
+                <Pencil size={14} />
+              </button>
+            </>
+          ) : (
+            <button type="button" className="dashboard-action-icon" disabled={controlsDisabled || !deletable}
+              title={t(deletable ? 'dashboard.restore' : 'dashboard.mapDeletePermission')}
+              aria-label={t('dashboard.restore')} onClick={() => act(onRestore)}>
+              <RotateCcw size={14} />
+            </button>
+          )}
+          <button type="button" className="dashboard-action-icon danger" disabled={controlsDisabled || !deletable}
+            title={t(!deletable ? 'dashboard.mapDeletePermission' : trashed ? 'dashboard.deleteForever' : 'common.delete')}
+            aria-label={t('dashboard.deleteMapNamed', { name: map.name })} onClick={() => act(trashed ? onDelete : onTrash)}>
+            <Trash2 size={14} />
+          </button>
         </div>
       </div>
     </article>

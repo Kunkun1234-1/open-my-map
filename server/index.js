@@ -8,14 +8,19 @@ import { fileURLToPath } from 'node:url';
 import multer from 'multer';
 import { fileTypeFromFile } from 'file-type';
 import {
-  db, getMap, getPublicMap, listMaps, listProjects, adminStats, backupData, audit, now,
+  db, getMap, getMapPreview, getPublicMap, listMaps, listProjects, adminStats, backupData, audit, now,
   listVisibleMaps, listVisibleProjects, createProjectOwnedBy, inviteProjectMember,
   listProjectMembers, updateProjectMemberRole, removeProjectMember, transferProjectOwnership,
+  updateProjectMetadata, updateProjectMetadataAndCover, deleteEmptyProject,
   hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, setMapFavorite,
+  canAccessProject, canEditProject, canEditMap, canViewMap,
   reorderMapLayers, reorderLayerFeatures, moveMapFeature, updateMapLayerStyle,
   updateMapStoryOrder,
   createContentCheckpoint, restoreContentCheckpoint,
   saveMapDirections, validateDirectionsPayload,
+  updateUserAvatar,
+  updateUserHomeBackground,
+  updateUserHomeHeroTitles,
   validateCustomColumns, validateFeatureProperties, reconcileFeatureCustomData,
 } from './db.js';
 import {
@@ -31,18 +36,36 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.resolve(here, '../dist');
 const uploadsDir = process.env.UPLOAD_DIR || path.resolve(here, '../data/uploads');
 const uploadTempDir = process.env.UPLOAD_TEMP_DIR || path.resolve(here, '../data/.upload-tmp');
+const coversDir = process.env.COVER_DIR || path.resolve(uploadsDir, '../covers');
+const avatarsDir = process.env.AVATAR_DIR || path.resolve(here, '../data/avatars');
+const homeBackgroundsDir = process.env.HOME_BACKGROUND_DIR || path.resolve(here, '../data/home-backgrounds');
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_FEATURE = 12;
 const MAX_FILES_PER_UPLOAD = 8;
+const MAX_COVER_BYTES = 10 * 1024 * 1024;
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+const MAX_HOME_BACKGROUND_BYTES = 10 * 1024 * 1024;
+const MAX_MAP_NAME_LENGTH = 120;
+const MAX_MAP_DESCRIPTION_LENGTH = 2000;
 const supportedMediaTypes = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif',
   'video/mp4', 'video/webm', 'video/quicktime', 'video/x-m4v',
+]);
+const supportedCoverTypes = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+  ['image/gif', 'gif'],
+  ['image/avif', 'avif'],
 ]);
 const invalidFileNameCharacters = new Set('<>:"/\\|?*');
 
 mkdirSync(uploadsDir, { recursive: true });
 mkdirSync(uploadTempDir, { recursive: true });
+mkdirSync(coversDir, { recursive: true });
+mkdirSync(avatarsDir, { recursive: true });
+mkdirSync(homeBackgroundsDir, { recursive: true });
 
 app.disable('x-powered-by');
 app.use(cors());
@@ -87,6 +110,63 @@ const mediaUpload = multer({
   },
 });
 
+const coverUpload = multer({
+  dest: uploadTempDir,
+  limits: { files: 1, fileSize: MAX_COVER_BYTES },
+});
+
+const avatarUpload = multer({
+  dest: uploadTempDir,
+  limits: { files: 1, fileSize: MAX_AVATAR_BYTES },
+});
+
+const homeBackgroundUpload = multer({
+  dest: uploadTempDir,
+  limits: { files: 1, fileSize: MAX_HOME_BACKGROUND_BYTES },
+});
+
+function singleCoverUpload(req, res, next) {
+  coverUpload.single('file')(req, res, (error) => {
+    if (!error) return next();
+    cleanupTemporaryFiles([...(Array.isArray(req.files) ? req.files : []), req.file].filter(Boolean));
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: `封面图片不能超过 ${Math.round(MAX_COVER_BYTES / 1024 / 1024)} MB` });
+    }
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({ error: '请使用单个 file 字段上传封面图片' });
+    }
+    return next(error);
+  });
+}
+
+function singleAvatarUpload(req, res, next) {
+  avatarUpload.single('file')(req, res, (error) => {
+    if (!error) return next();
+    cleanupTemporaryFiles([...(Array.isArray(req.files) ? req.files : []), req.file].filter(Boolean));
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: `头像图片不能超过 ${Math.round(MAX_AVATAR_BYTES / 1024 / 1024)} MB` });
+    }
+    if (error instanceof multer.MulterError && ['LIMIT_UNEXPECTED_FILE', 'LIMIT_FILE_COUNT'].includes(error.code)) {
+      return res.status(400).json({ error: '请使用单个 file 字段上传头像图片' });
+    }
+    return next(error);
+  });
+}
+
+function singleHomeBackgroundUpload(req, res, next) {
+  homeBackgroundUpload.single('file')(req, res, (error) => {
+    if (!error) return next();
+    cleanupTemporaryFiles([...(Array.isArray(req.files) ? req.files : []), req.file].filter(Boolean));
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: `主页背景图片不能超过 ${Math.round(MAX_HOME_BACKGROUND_BYTES / 1024 / 1024)} MB` });
+    }
+    if (error instanceof multer.MulterError && ['LIMIT_UNEXPECTED_FILE', 'LIMIT_FILE_COUNT'].includes(error.code)) {
+      return res.status(400).json({ error: '请使用单个 file 字段上传主页背景图片' });
+    }
+    return next(error);
+  });
+}
+
 function httpError(message, status = 400) {
   const error = new Error(message);
   error.status = status;
@@ -102,6 +182,26 @@ function readExpectedVersion(req) {
   if (header == null || header === '') return null;
   const value = Number(header);
   return Number.isFinite(value) ? value : null;
+}
+
+function readProjectExpectedVersion(body) {
+  if (!Object.hasOwn(body || {}, 'expectedVersion')) return undefined;
+  const raw = body.expectedVersion;
+  const validNumber = typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 1;
+  const validString = typeof raw === 'string' && /^[1-9]\d*$/.test(raw.trim()) && Number.isSafeInteger(Number(raw));
+  if (!validNumber && !validString) {
+    throw httpError('expectedVersion 必须为正整数');
+  }
+  return Number(raw);
+}
+
+function sendProjectMutationError(res, error) {
+  return res.status(error.status || 400).json({
+    error: error.message,
+    ...(error.conflict ? { conflict: true } : {}),
+    ...(error.latest ? { latest: error.latest } : {}),
+    ...(error.currentVersion !== undefined ? { currentVersion: error.currentVersion } : {}),
+  });
 }
 
 function assertVersionMatch(req, res, currentVersion, latestPayload) {
@@ -208,10 +308,135 @@ function deleteStoredFiles(attachments = []) {
   }
 }
 
+function coverPath(storedName) {
+  return path.join(coversDir, path.basename(String(storedName || '')));
+}
+
+function deleteCoverFile(storedName) {
+  if (storedName) safeUnlink(coverPath(storedName));
+}
+
+function avatarPath(storedName) {
+  return path.join(avatarsDir, path.basename(String(storedName || '')));
+}
+
+function deleteAvatarFile(storedName) {
+  if (storedName) safeUnlink(avatarPath(storedName));
+}
+
+function homeBackgroundPath(storedName) {
+  return path.join(homeBackgroundsDir, path.basename(String(storedName || '')));
+}
+
+function deleteHomeBackgroundFile(storedName) {
+  if (storedName) safeUnlink(homeBackgroundPath(storedName));
+}
+
+function projectMetadataInput(body) {
+  const metadata = {};
+  for (const key of ['name', 'description']) {
+    if (Object.hasOwn(body || {}, key)) metadata[key] = body[key];
+  }
+  return metadata;
+}
+
+function mapMetadataInput(body) {
+  const metadata = {};
+  if (Object.hasOwn(body || {}, 'name')) {
+    metadata.name = String(body.name ?? '').trim();
+    if (!metadata.name) throw httpError('地图名称不能为空');
+    if (metadata.name.length > MAX_MAP_NAME_LENGTH) {
+      throw httpError(`地图名称不能超过 ${MAX_MAP_NAME_LENGTH} 个字符`);
+    }
+  }
+  if (Object.hasOwn(body || {}, 'description')) {
+    metadata.description = String(body.description ?? '');
+    if (metadata.description.length > MAX_MAP_DESCRIPTION_LENGTH) {
+      throw httpError(`地图描述不能超过 ${MAX_MAP_DESCRIPTION_LENGTH} 个字符`);
+    }
+  }
+  return metadata;
+}
+
+async function prepareCoverFile(file) {
+  if (!file?.path) throw httpError('请选择封面图片');
+  const detected = await fileTypeFromFile(file.path);
+  const extension = supportedCoverTypes.get(detected?.mime);
+  if (!extension) throw httpError('封面仅支持 JPEG、PNG、WebP、GIF 或 AVIF 图片', 415);
+  return `${crypto.randomBytes(16).toString('hex')}.${extension}`;
+}
+
+async function prepareAvatarFile(file) {
+  if (!file?.path) throw httpError('请选择头像图片');
+  const detected = await fileTypeFromFile(file.path);
+  const extension = supportedCoverTypes.get(detected?.mime);
+  if (!extension) throw httpError('头像仅支持 JPEG、PNG、WebP、GIF 或 AVIF 图片', 415);
+  return `${crypto.randomBytes(16).toString('hex')}.${extension}`;
+}
+
+async function prepareHomeBackgroundFile(file) {
+  if (!file?.path) throw httpError('请选择主页背景图片');
+  const detected = await fileTypeFromFile(file.path);
+  const extension = supportedCoverTypes.get(detected?.mime);
+  if (!extension) throw httpError('主页背景仅支持 JPEG、PNG、WebP、GIF 或 AVIF 图片', 415);
+  return `${crypto.randomBytes(16).toString('hex')}.${extension}`;
+}
+
+function sendCover(req, res, storedName) {
+  if (!storedName || !existsSync(coverPath(storedName))) return notFound(res, '封面不存在');
+  if (req.query.v && req.query.v !== storedName) return notFound(res, '封面不存在');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.sendFile(coverPath(storedName));
+}
+
+function sendAvatar(req, res, storedName) {
+  if (!storedName || !existsSync(avatarPath(storedName))) return notFound(res, '头像不存在');
+  if (req.query.v && req.query.v !== storedName) return notFound(res, '头像不存在');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.sendFile(avatarPath(storedName));
+}
+
+function sendHomeBackground(req, res, storedName) {
+  if (!storedName || !existsSync(homeBackgroundPath(storedName))) return notFound(res, '主页背景不存在');
+  if (req.query.v && req.query.v !== storedName) return notFound(res, '主页背景不存在');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.sendFile(homeBackgroundPath(storedName));
+}
+
+function requireProjectCoverManager(req, res, next) {
+  const projectId = id(req.params.projectId);
+  if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) return notFound(res, '项目不存在');
+  if (!canEditProject(req.user, projectId)) return res.status(403).json({ error: '仅项目所有者或管理员可修改项目封面' });
+  next();
+}
+
+function requireMapCoverEditor(req, res, next) {
+  const mapId = id(req.params.mapId);
+  if (!db.prepare('SELECT 1 FROM maps WHERE id = ? AND deleted_at IS NULL').get(mapId)) return notFound(res, '地图不存在');
+  if (!canEditMap(req.user, mapId)) return res.status(403).json({ error: '无权修改该地图封面' });
+  next();
+}
+
 function cleanOriginalName(value) {
   const originalName = path.basename(String(value || 'media'));
   const cleaned = Array.from(originalName, (character) => character.charCodeAt(0) < 32 || invalidFileNameCharacters.has(character) ? '_' : character).join('');
   return cleaned.slice(0, 180) || 'media';
+}
+
+function normalizeHomeHeroTitles(value) {
+  if (!Array.isArray(value)) throw httpError('titles 必须为数组');
+  if (value.length === 0) return ['', '', ''];
+  if (value.length !== 3) throw httpError('titles 必须包含 3 个标题');
+  return value.map((title) => {
+    if (typeof title !== 'string') throw httpError('每个主页标题必须为字符串');
+    const normalized = title.replace(/\r\n?/g, '\n').trim();
+    if (normalized.length > 120) throw httpError('每个主页标题不能超过 120 个字符');
+    if (normalized.split('\n').length > 2) throw httpError('每个主页标题最多 2 行');
+    return normalized;
+  });
 }
 
 app.get('/api/health', (req, res) => res.json({ ok: true, service: 'open-my-map', time: now() }));
@@ -222,6 +447,89 @@ app.get('/api/auth/me', (req, res) => res.json({ user: req.user || null }));
 app.patch('/api/auth/me', requireUser, (req, res) => {
   try {
     const user = updateProfile(req.user.id, { name: req.body.name });
+    res.json({ user });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
+});
+
+app.post('/api/auth/me/avatar', requireUser, singleAvatarUpload, asyncRoute(async (req, res) => {
+  const storedName = await prepareAvatarFile(req.file);
+  const current = db.prepare('SELECT avatar_stored_name, status FROM users WHERE id = ?').get(req.user.id);
+  if (!current) throw httpError('用户不存在', 404);
+  if (current.status !== 'active') throw httpError('该账号已停用', 403);
+  const destination = avatarPath(storedName);
+  renameSync(req.file.path, destination);
+  let updated;
+  try {
+    updated = updateUserAvatar(req.user.id, storedName);
+  } catch (error) {
+    deleteAvatarFile(storedName);
+    throw error;
+  }
+  deleteAvatarFile(updated.previousAvatarStoredName);
+  audit('avatar', 'user', req.user.id, '更新自定义头像');
+  res.json({ user: updated.user });
+}));
+
+app.delete('/api/auth/me/avatar', requireUser, (req, res) => {
+  try {
+    const updated = updateUserAvatar(req.user.id, null);
+    deleteAvatarFile(updated.previousAvatarStoredName);
+    if (updated.previousAvatarStoredName) audit('reset-avatar', 'user', req.user.id, '恢复默认账号头像');
+    res.json({ user: updated.user });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
+});
+
+app.get('/api/users/:userId/avatar', requireUser, (req, res) => {
+  const user = db.prepare('SELECT avatar_stored_name FROM users WHERE id = ?').get(id(req.params.userId));
+  if (!user) return notFound(res, '用户不存在');
+  return sendAvatar(req, res, user.avatar_stored_name);
+});
+
+app.get('/api/auth/me/home-background', requireUser, (req, res) => {
+  const user = db.prepare('SELECT home_background_stored_name FROM users WHERE id = ?').get(req.user.id);
+  if (!user) return notFound(res, '用户不存在');
+  return sendHomeBackground(req, res, user.home_background_stored_name);
+});
+
+app.post('/api/auth/me/home-background', requireUser, singleHomeBackgroundUpload, asyncRoute(async (req, res) => {
+  const storedName = await prepareHomeBackgroundFile(req.file);
+  const current = db.prepare('SELECT home_background_stored_name, status FROM users WHERE id = ?').get(req.user.id);
+  if (!current) throw httpError('用户不存在', 404);
+  if (current.status !== 'active') throw httpError('该账号已停用', 403);
+  const destination = homeBackgroundPath(storedName);
+  renameSync(req.file.path, destination);
+  let updated;
+  try {
+    updated = updateUserHomeBackground(req.user.id, storedName);
+  } catch (error) {
+    deleteHomeBackgroundFile(storedName);
+    throw error;
+  }
+  deleteHomeBackgroundFile(updated.previousHomeBackgroundStoredName);
+  audit('home-background', 'user', req.user.id, '更新主页背景图片');
+  res.json({ user: updated.user });
+}));
+
+app.delete('/api/auth/me/home-background', requireUser, (req, res) => {
+  try {
+    const updated = updateUserHomeBackground(req.user.id, null);
+    deleteHomeBackgroundFile(updated.previousHomeBackgroundStoredName);
+    if (updated.previousHomeBackgroundStoredName) audit('reset-home-background', 'user', req.user.id, '恢复默认主页背景图片');
+    res.json({ user: updated.user });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
+});
+
+app.patch('/api/auth/me/home-appearance', requireUser, (req, res) => {
+  try {
+    const titles = normalizeHomeHeroTitles(req.body?.titles);
+    const user = updateUserHomeHeroTitles(req.user.id, titles);
+    audit('home-appearance', 'user', req.user.id, '更新主页轮播标题');
     res.json({ user });
   } catch (error) {
     res.status(error.status || 400).json({ error: error.message });
@@ -287,6 +595,82 @@ app.post('/api/projects', requireUser, (req, res) => {
   res.status(201).json(project);
 });
 
+app.patch('/api/projects/:projectId', requireUser, (req, res) => {
+  try {
+    const expectedVersion = readProjectExpectedVersion(req.body);
+    res.json(updateProjectMetadata(id(req.params.projectId), req.body, req.user, expectedVersion));
+  } catch (error) {
+    sendProjectMutationError(res, error);
+  }
+});
+
+app.delete('/api/projects/:projectId', requireUser, (req, res) => {
+  try {
+    const deleted = deleteEmptyProject(id(req.params.projectId), req.user);
+    deleteCoverFile(deleted.coverStoredName);
+    res.status(204).end();
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
+});
+
+app.get('/api/projects/:projectId/cover', requireUser, (req, res) => {
+  const projectId = id(req.params.projectId);
+  const project = db.prepare('SELECT cover_stored_name FROM projects WHERE id = ?').get(projectId);
+  if (!project) return notFound(res, '项目不存在');
+  if (!canAccessProject(req.user, projectId)) return res.status(403).json({ error: '无权查看该项目封面' });
+  return sendCover(req, res, project.cover_stored_name);
+});
+
+app.post('/api/projects/:projectId/cover', requireUser, requireProjectCoverManager, singleCoverUpload, asyncRoute(async (req, res) => {
+  const projectId = id(req.params.projectId);
+  const expectedVersion = readProjectExpectedVersion(req.body);
+  const metadata = projectMetadataInput(req.body);
+  const storedName = await prepareCoverFile(req.file);
+  const destination = coverPath(storedName);
+  renameSync(req.file.path, destination);
+  let updated;
+  try {
+    updated = updateProjectMetadataAndCover(projectId, metadata, req.user, storedName, expectedVersion);
+  } catch (error) {
+    deleteCoverFile(storedName);
+    throw error;
+  }
+  deleteCoverFile(updated.previousCoverStoredName);
+  audit('cover', 'project', projectId, updated.metadataChanged ? '更新项目元数据和封面' : '更新项目封面');
+  res.json(updated.project);
+}));
+
+app.delete('/api/projects/:projectId/cover', requireUser, requireProjectCoverManager, (req, res) => {
+  try {
+    const projectId = id(req.params.projectId);
+    const project = db.prepare('SELECT cover_stored_name, version FROM projects WHERE id = ?').get(projectId);
+    if (!project) return notFound(res, '项目不存在');
+    if (!canEditProject(req.user, projectId)) return res.status(403).json({ error: '仅项目所有者或管理员可修改项目封面' });
+    const expectedVersion = readProjectExpectedVersion(req.body);
+    const metadata = projectMetadataInput(req.body);
+    const hasMetadata = Object.keys(metadata).length > 0;
+    if (!project.cover_stored_name && !hasMetadata) {
+      const latest = listVisibleProjects(req.user).find((item) => item.id === projectId);
+      if (expectedVersion !== undefined && latest.version !== expectedVersion) {
+        return res.status(409).json({
+          error: '项目已被他人更新，请基于最新版本继续编辑',
+          conflict: true,
+          latest,
+          currentVersion: latest.version,
+        });
+      }
+      return res.json(latest);
+    }
+    const updated = updateProjectMetadataAndCover(projectId, metadata, req.user, null, expectedVersion);
+    deleteCoverFile(updated.previousCoverStoredName);
+    audit('reset-cover', 'project', projectId, hasMetadata ? '更新项目元数据并恢复默认封面' : '恢复默认项目封面');
+    return res.json(updated.project);
+  } catch (error) {
+    return sendProjectMutationError(res, error);
+  }
+});
+
 app.post('/api/projects/:projectId/members', requireUser, (req, res) => {
   try {
     const member = inviteProjectMember(id(req.params.projectId), {
@@ -346,7 +730,7 @@ app.post('/api/projects/:projectId/transfer', requireUser, (req, res) => {
 
 app.post('/api/maps', requireUser, (req, res) => {
   const created = now();
-  const name = String(req.body.name || '无标题地图').trim().slice(0, 120) || '无标题地图';
+  const name = String(req.body.name || '无标题地图').trim().slice(0, MAX_MAP_NAME_LENGTH) || '无标题地图';
   // 选择目标项目：优先指定，否则取用户可编辑的第一个项目。
   let projectId;
   const requestedProjectId = id(req.body.projectId ?? req.body.project_id);
@@ -398,6 +782,89 @@ app.get('/api/maps/:mapId', (req, res) => {
     if (!membership) return res.status(403).json({ error: '无权查看该地图' });
   }
   res.json(map);
+});
+
+app.get('/api/maps/:mapId/preview', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  const mapRecord = db.prepare('SELECT deleted_at FROM maps WHERE id = ?').get(mapId);
+  if (!mapRecord) return notFound(res, '地图不存在');
+  const allowed = mapRecord.deleted_at ? canManageMap(req.user, mapId) : canViewMap(req.user, mapId);
+  if (!allowed) return res.status(403).json({ error: '无权查看该地图预览' });
+  const preview = getMapPreview(mapId);
+  if (!preview) return notFound(res, '地图不存在');
+  res.set('Cache-Control', 'private, no-store');
+  return res.json(preview);
+});
+
+app.get('/api/maps/:mapId/cover', requireUser, (req, res) => {
+  const mapId = id(req.params.mapId);
+  const map = db.prepare('SELECT deleted_at, cover_stored_name FROM maps WHERE id = ?').get(mapId);
+  if (!map) return notFound(res, '地图不存在');
+  const allowed = map.deleted_at ? canManageMap(req.user, mapId) : canViewMap(req.user, mapId);
+  if (!allowed) return res.status(403).json({ error: '无权查看该地图封面' });
+  return sendCover(req, res, map.cover_stored_name);
+});
+
+app.post('/api/maps/:mapId/cover', requireUser, requireMapCoverEditor, singleCoverUpload, asyncRoute(async (req, res) => {
+  const mapId = id(req.params.mapId);
+  const metadata = mapMetadataInput(req.body);
+  const storedName = await prepareCoverFile(req.file);
+  // File inspection yields to the event loop. Re-check the mutable map state and
+  // permissions afterwards, then keep the final validation and write synchronous.
+  const existing = db.prepare('SELECT cover_stored_name FROM maps WHERE id = ? AND deleted_at IS NULL').get(mapId);
+  if (!existing) throw httpError('地图不存在', 404);
+  if (!canEditMap(req.user, mapId)) throw httpError('无权修改该地图封面', 403);
+  const latest = getMap(mapId);
+  if (!assertVersionMatch(req, res, latest.version, latest)) {
+    cleanupTemporaryFiles([req.file].filter(Boolean));
+    return;
+  }
+  const destination = coverPath(storedName);
+  renameSync(req.file.path, destination);
+  const updatedAt = now();
+  try {
+    db.prepare(`
+      UPDATE maps
+      SET name = ?, description = ?, cover_stored_name = ?, updated_at = ?, version = version + 1
+      WHERE id = ?
+    `).run(metadata.name ?? latest.name, metadata.description ?? latest.description, storedName, updatedAt, mapId);
+  } catch (error) {
+    deleteCoverFile(storedName);
+    throw error;
+  }
+  deleteCoverFile(existing.cover_stored_name);
+  audit('cover', 'map', mapId, Object.keys(metadata).length ? '更新地图元数据和封面' : '更新地图封面');
+  const map = getMap(mapId);
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  res.json(map);
+}));
+
+app.delete('/api/maps/:mapId/cover', requireUser, requireMapCoverEditor, (req, res) => {
+  const mapId = id(req.params.mapId);
+  const existing = db.prepare('SELECT cover_stored_name FROM maps WHERE id = ? AND deleted_at IS NULL').get(mapId);
+  if (!existing) return notFound(res, '地图不存在');
+  if (!canEditMap(req.user, mapId)) return res.status(403).json({ error: '无权修改该地图封面' });
+  const latest = getMap(mapId);
+  if (!assertVersionMatch(req, res, latest.version, latest)) return;
+  let metadata;
+  try {
+    metadata = mapMetadataInput(req.body);
+  } catch (error) {
+    return res.status(error.status || 400).json({ error: error.message });
+  }
+  if (!existing.cover_stored_name && Object.keys(metadata).length === 0) return res.json(latest);
+
+  const updatedAt = now();
+  db.prepare(`
+    UPDATE maps
+    SET name = ?, description = ?, cover_stored_name = NULL, updated_at = ?, version = version + 1
+    WHERE id = ?
+  `).run(metadata.name ?? latest.name, metadata.description ?? latest.description, updatedAt, mapId);
+  deleteCoverFile(existing.cover_stored_name);
+  audit('reset-cover', 'map', mapId, Object.keys(metadata).length ? '更新地图元数据并恢复默认封面' : '恢复默认地图封面');
+  const map = getMap(mapId);
+  emitMapOp(mapId, 'map.updated', req.user, { entity: map, version: map.version });
+  return res.json(map);
 });
 
 // 校验当前用户对某地图是否具备编辑权限（owner/editor 或 data_admin）。
@@ -459,13 +926,19 @@ app.patch('/api/maps/:mapId', (req, res) => {
   if (!existing) return notFound(res, '地图不存在');
   if (!assertEditor(req, res, mapId)) return;
   if (!assertVersionMatch(req, res, existing.version, existing)) return;
+  let metadata;
+  try {
+    metadata = mapMetadataInput(req.body);
+  } catch (error) {
+    return res.status(error.status || 400).json({ error: error.message });
+  }
   const allowed = ['name', 'description', 'owner', 'visibility', 'base_map', 'center_lat', 'center_lng', 'zoom'];
   const fields = [];
   const values = [];
   for (const key of allowed) {
     if (Object.hasOwn(req.body, key)) {
       fields.push(`${key} = ?`);
-      values.push(req.body[key]);
+      values.push(Object.hasOwn(metadata, key) ? metadata[key] : req.body[key]);
     }
   }
   if (fields.length) {
@@ -481,7 +954,7 @@ app.patch('/api/maps/:mapId', (req, res) => {
 
 app.delete('/api/maps/:mapId', (req, res) => {
   const mapId = id(req.params.mapId);
-  const existing = db.prepare('SELECT name, deleted_at FROM maps WHERE id = ?').get(mapId);
+  const existing = db.prepare('SELECT name, deleted_at, cover_stored_name FROM maps WHERE id = ?').get(mapId);
   if (!existing) return notFound(res, '地图不存在');
   if (existing.deleted_at) {
     if (!req.user) return res.status(401).json({ error: '请先登录' });
@@ -495,6 +968,7 @@ app.delete('/api/maps/:mapId', (req, res) => {
   `).all(mapId);
   db.prepare('DELETE FROM maps WHERE id = ?').run(mapId);
   deleteStoredFiles(attachments);
+  deleteCoverFile(existing.cover_stored_name);
   audit('delete', 'map', mapId, `删除地图“${existing.name}”`);
   emitMapOp(mapId, 'map.deleted', req.user, { entityId: mapId });
   res.status(204).end();
@@ -1163,6 +1637,7 @@ app.use((error, req, res, next) => {
     ...(error.code ? { code: error.code } : {}),
     ...(error.conflict ? { conflict: true } : {}),
     ...(error.latest ? { latest: error.latest } : {}),
+    ...(error.currentVersion !== undefined ? { currentVersion: error.currentVersion } : {}),
     ...(error.currentFingerprint ? { currentFingerprint: error.currentFingerprint } : {}),
   });
 });

@@ -1,3 +1,4 @@
+import UserAvatar from './UserAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, Camera, ChevronDown, ChevronRight, CircleHelp, Database, Download, Eye, GitFork,
@@ -1478,7 +1479,7 @@ export default function MapEditor({ mapId }) {
           </div>
           <button className="apps-grid" aria-label={t('editor.apps')}><span /><span /><span /><span /><span /><span /><span /><span /><span /></button>
           <button className="editor-avatar" onClick={() => navigate('/me')} title={user?.displayName || user?.name || ''}>
-            {(user?.displayName || user?.name || '?').slice(0, 1)}
+            <UserAvatar user={user} />
           </button>
         </div>
         {measurementPoints.length ? <MeasurePanel points={measurementPoints} distance={measurementDistance(measurementPoints,measurementClosed)} area={measurementClosed ? measurementArea(measurementPoints) : 0} closed={measurementClosed} onClear={()=>updateMeasurement([],false)} onRemoveLast={()=>updateMeasurement((points)=>points.slice(0,-1))} onClose={()=>{updateMeasurement([],false);setActiveTool('pan');}} onToggleClosed={()=>updateMeasurement(measurementPoints,!measurementClosed)} lang={lang} /> : null}

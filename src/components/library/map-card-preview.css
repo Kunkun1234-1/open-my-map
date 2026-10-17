@@ -1,0 +1,9 @@
+.dashboard-map-preview { position: absolute; inset: 0; overflow: hidden; background: #edf1f4; pointer-events: none; }
+.dashboard-cover-preview { position: relative; overflow: hidden; }
+.dashboard-map-preview .amap-map-shell { width: 100%; height: 100%; }
+.dashboard-map-preview .basemap-loading-notice,
+.dashboard-map-preview .basemap-config-notice { display: none; }
+.dashboard-map-preview-status { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; color: #8995a3; background: #edf1f4; font-size: 11px; }
+.dashboard-map-cover.has-map-preview { position: relative; z-index: 1; background: transparent; }
+.dashboard-map-cover.has-map-preview:hover { background: rgb(255 255 255 / 5%); }
+.dashboard-map-cover.has-map-preview:focus-visible { outline: 2px solid #758fb7; outline-offset: -3px; }

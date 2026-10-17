@@ -1,0 +1,81 @@
+.dashboard-asset-feedback {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgb(255 255 255 / 55%);
+  border-radius: 6px;
+  background: rgb(26 35 49 / 86%);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1.35;
+  box-shadow: 0 2px 9px rgb(18 27 40 / 18%);
+}
+
+.dashboard-asset-feedback button {
+  min-height: 24px;
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 7px;
+  background: rgb(255 255 255 / 16%);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dashboard-asset-feedback button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 26%);
+}
+
+.dashboard-asset-feedback button:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.dashboard-asset-feedback--cover {
+  position: absolute;
+  z-index: 4;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 4px 5px 4px 8px;
+}
+
+.dashboard-asset-feedback--inline {
+  margin: -2px 0 9px;
+  padding: 5px 6px 5px 9px;
+  background: #fff4f2;
+  border-color: #f2c8c2;
+  color: #8c3129;
+  box-shadow: none;
+}
+
+.dashboard-asset-feedback--inline button {
+  background: #f7ded9;
+}
+
+.dashboard-asset-feedback--inline button:hover:not(:disabled) {
+  background: #f1d1cb;
+}
+
+.dashboard-asset-feedback--inline button:focus-visible {
+  outline-color: #8c3129;
+}
+
+.dashboard-asset-feedback--hero {
+  position: absolute;
+  z-index: 2;
+  top: 121px;
+  right: 25px;
+  max-width: min(240px, calc(100% - 50px));
+  padding: 5px 6px 5px 9px;
+}
+
+@media (max-width: 640px) {
+  .dashboard-asset-feedback--hero {
+    top: auto;
+    bottom: 65px;
+    right: 18px;
+    max-width: calc(100% - 36px);
+  }
+}
