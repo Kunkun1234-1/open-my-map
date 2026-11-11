@@ -7,11 +7,8 @@ import {
   Globe,
   Home,
   Map,
-  Menu,
   Plus,
   Shield,
-  Star,
-  Trash2,
   Users,
   X,
 } from 'lucide-react';
@@ -19,11 +16,6 @@ import { navigate } from '../../App.jsx';
 import { LanguageSwitch } from '../../i18n/index.jsx';
 import './sidebar-groups.css';
 
-const mapSections = [
-  ['shared', Users],
-  ['favorites', Star],
-  ['trash', Trash2],
-];
 const spaceIcons = [Users, Compass, Globe, Map, Compass];
 
 function storageKey(userId) {
@@ -34,11 +26,10 @@ function readGroupState(key) {
   try {
     const saved = JSON.parse(window.localStorage.getItem(key) || '{}');
     return {
-      maps: saved.maps !== false,
       projects: saved.projects !== false,
     };
   } catch {
-    return { maps: true, projects: true };
+    return { projects: true };
   }
 }
 
@@ -110,28 +101,18 @@ export default function LibrarySidebar({
       current.projects ? current : { ...current, projects: true },
     );
   }, [selectedProjectId]);
-  useEffect(() => {
-    if (!['shared', 'favorites', 'trash'].includes(section)) return;
-    setGroups((current) =>
-      current.maps ? current : { ...current, maps: true },
-    );
-  }, [section]);
   const name = user?.displayName || user?.name || t('library.account');
-  const toggleGroup = (group) => {
-    if (group === 'projects') {
-      const willCollapse = projectsExpanded;
-      setManuallyCollapsedProjectId(
-        willCollapse && selectedProjectId !== 'all'
-          ? selectedProjectId
-          : null,
-      );
-      setGroups((current) => ({
-        ...current,
-        projects: !projectsExpanded,
-      }));
-      return;
-    }
-    setGroups((current) => ({ ...current, [group]: !current[group] }));
+  const toggleProjects = () => {
+    const willCollapse = projectsExpanded;
+    setManuallyCollapsedProjectId(
+      willCollapse && selectedProjectId !== 'all'
+        ? selectedProjectId
+        : null,
+    );
+    setGroups((current) => ({
+      ...current,
+      projects: !projectsExpanded,
+    }));
   };
   const chooseProject = (projectId) => {
     setGroups((current) =>
@@ -212,68 +193,24 @@ export default function LibrarySidebar({
             <span>{t('dashboard.home')}</span>
           </button>
 
-          <section className="sidebar-nav-group">
-            <div className="sidebar-nav-group-heading">
-              <button
-                type="button"
-                className={`sidebar-nav-group-link${
-                  section === 'maps' && selectedProjectId === 'all'
-                    ? ' active'
-                    : ''
-                }`}
-                onClick={() => onNavigate('maps')}
-                aria-current={
-                  section === 'maps' && selectedProjectId === 'all'
-                    ? 'page'
-                    : undefined
-                }
-              >
-                <Map size={17} strokeWidth={1.7} />
-                <span>{t('dashboard.maps')}</span>
-              </button>
-              <button
-                type="button"
-                className="sidebar-nav-group-toggle"
-                onClick={() => toggleGroup('maps')}
-                aria-expanded={groups.maps}
-                aria-controls="sidebar-map-children"
-                aria-label={t(
-                  groups.maps
-                    ? 'dashboard.collapseMaps'
-                    : 'dashboard.expandMaps',
-                )}
-              >
-                {groups.maps ? (
-                  <ChevronDown size={14} />
-                ) : (
-                  <ChevronRight size={14} />
-                )}
-              </button>
-            </div>
-            {groups.maps ? (
-              <div id="sidebar-map-children" className="sidebar-nav-children">
-                {mapSections.map(([key, Icon]) => (
-                  <button
-                    key={key}
-                    className={
-                      section === key && selectedProjectId === 'all'
-                        ? 'active'
-                        : ''
-                    }
-                    onClick={() => onNavigate(key)}
-                    aria-current={
-                      section === key && selectedProjectId === 'all'
-                        ? 'page'
-                        : undefined
-                    }
-                  >
-                    <Icon size={15} strokeWidth={1.7} />
-                    <span>{t(`dashboard.${key}`)}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </section>
+          <button
+            className={
+              ['maps', 'shared', 'favorites', 'trash'].includes(section) &&
+              selectedProjectId === 'all'
+                ? 'active'
+                : ''
+            }
+            onClick={() => onNavigate('maps')}
+            aria-current={
+              ['maps', 'shared', 'favorites', 'trash'].includes(section) &&
+              selectedProjectId === 'all'
+                ? 'page'
+                : undefined
+            }
+          >
+            <Map size={17} strokeWidth={1.7} />
+            <span>{t('dashboard.maps')}</span>
+          </button>
 
           <section className="sidebar-nav-group sidebar-project-group">
             <div className="sidebar-nav-group-heading">
@@ -291,7 +228,7 @@ export default function LibrarySidebar({
               <button
                 type="button"
                 className="sidebar-nav-group-toggle"
-                onClick={() => toggleGroup('projects')}
+                onClick={toggleProjects}
                 aria-expanded={projectsExpanded}
                 aria-controls="sidebar-project-children"
                 aria-label={t(

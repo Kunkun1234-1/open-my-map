@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import DirectionsLayerSummary from './DirectionsLayerSummary.jsx';
 import MarkerIcon from './MarkerIcon.jsx';
+import { startLayerReorder } from './layer-reorder.js';
 import './layer-panel.css';
 import './reference-layer-panel.css';
 import './reference-layer-menu.css';
@@ -96,9 +97,38 @@ export default function LayerPanel({
   const [announcement, setAnnouncement] = useState('');
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 });
   const dragRef = useRef(null);
+  const layerListRef = useRef(null);
+  const cancelLayerDrag = useRef(null);
+  const suppressLayerClickUntil = useRef(0);
   const menuRef = useRef(null);
   const menuButtonRef = useRef(null);
   const featureStyleButtonsRef = useRef(new Map());
+  const layerOrderKey = JSON.stringify(layers.map((layer) => layer.id));
+
+  useEffect(() => () => cancelLayerDrag.current?.(), [layerOrderKey, canEdit, hidden]);
+
+  const startLayerPointer = (event, layer) => {
+    if (!canEdit || !onReorderLayers || hidden) return;
+    cancelLayerDrag.current?.();
+    cancelLayerDrag.current = startLayerReorder(event, {
+      root: layerListRef.current,
+      ids: layers.map((item) => item.id),
+      sourceId: layer.id,
+      onStart: () => {
+        setLayerMenu(null);
+        setFeatureMenu(null);
+        setAnnouncement(text(`正在移动 ${layer.name}`, `Moving ${layer.name}`));
+      },
+      onFinish: (active) => {
+        cancelLayerDrag.current = null;
+        if (active) {
+          suppressLayerClickUntil.current = performance.now() + 300;
+          setAnnouncement(text('拖动已结束', 'Dragging ended'));
+        }
+      },
+      onCommit: (ids) => persist(onReorderLayers, [ids], text('图层顺序已更新', 'Layer order updated')),
+    });
+  };
 
   const anchorMenu = (button, width = 220) => {
     const bounds = button.getBoundingClientRect();
@@ -279,7 +309,13 @@ export default function LayerPanel({
 
   return (
     <div
+      ref={layerListRef}
       className="layer-list enhanced-layer-list"
+      onClickCapture={(event) => {
+        if (performance.now() >= suppressLayerClickUntil.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       data-testid="layer-list"
       hidden={hidden}
       role="tabpanel"
@@ -321,14 +357,15 @@ export default function LayerPanel({
             }}
             onDrop={(event) => dropOnLayer(event, layer, layerIndex)}
           >
-            <header className="layer-header enhanced-layer-header">
+            <header
+              className={`layer-header enhanced-layer-header${canEdit && onReorderLayers && layers.length > 1 ? ' can-reorder' : ''}`}
+              onPointerDown={(event) => startLayerPointer(event, layer)}
+              onDragStart={(event) => event.preventDefault()}
+            >
               <button
                 type="button"
                 className="layer-drag-handle"
-                draggable={canEdit && Boolean(onReorderLayers)}
                 disabled={!canEdit || !onReorderLayers}
-                onDragStart={(event) => startDrag(event, { kind: 'layer', id: layer.id, name: layer.name })}
-                onDragEnd={finishDrag}
                 onKeyDown={(event) => {
                   if (event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
                     event.preventDefault();

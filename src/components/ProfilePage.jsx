@@ -3,6 +3,7 @@ import { ArrowLeft, Eye, EyeOff, KeyRound, LogOut, Monitor, RefreshCw, Shield, U
 import { api, getSessionId } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { navigate } from '../App.jsx';
+import { goBack } from '../navigation.js';
 import { LanguageSwitch, useI18n } from '../i18n/index.jsx';
 import UserAvatar from './UserAvatar.jsx';
 import HomeAppearance from './profile/HomeAppearance.jsx';
@@ -128,7 +129,7 @@ export default function ProfilePage() {
 
   const onLogout = async () => {
     await logout();
-    navigate('/login');
+    navigate('/login', { replace: true, state: { loggedOut: true } });
   };
 
   const onRevokeAll = async () => {
@@ -192,7 +193,7 @@ export default function ProfilePage() {
     <div className="profile-page-shell">
       <div className="profile-workspace">
         <header className="profile-topbar">
-          <button type="button" onClick={() => navigate('/')}><ArrowLeft size={15} />{t('profile.library')}</button>
+          <button type="button" onClick={() => goBack()}><ArrowLeft size={15} />{t('common.back')}</button>
           <span className="profile-wordmark">Open My Map</span>
           <LanguageSwitch className="profile-language-switch" />
         </header>
@@ -270,7 +271,7 @@ export default function ProfilePage() {
             </div>
           </section>
 
-          <footer className="profile-logout-row"><div><strong>{t('profile.logout')}</strong><span>{t('profile.logoutHint')}</span></div><button type="button" onClick={onLogout}><LogOut size={16} />{t('profile.logout')}</button></footer>
+          <footer className="profile-logout-row"><div><span>{t('profile.logoutHint')}</span></div><button type="button" onClick={onLogout}><LogOut size={16} />{t('profile.logout')}</button></footer>
         </main>
       </div>
     </div>

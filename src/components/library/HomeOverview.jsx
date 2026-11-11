@@ -4,6 +4,7 @@ import CardCover from './CardCover.jsx';
 import MapsTable from './MapsTable.jsx';
 import ProjectsTable from './ProjectsTable.jsx';
 import { relativeDate } from './helpers.js';
+import { cardFillEvents } from './card-fill.js';
 import './home-overview.css';
 
 function recentMatches(items, query) {
@@ -17,7 +18,7 @@ function PreviewCard({ entity, kind, index, onOpen, onEdit, editable, disabled, 
   const editLabel = t(project ? 'dashboard.editProject' : 'dashboard.editMap');
   const permissionLabel = t(project ? 'dashboard.projectOwnerOnly' : 'dashboard.mapEditPermission');
   return (
-    <article className="dashboard-map-card dashboard-home-card" data-testid={`home-${kind}-${entity.id}`}>
+    <article className="dashboard-map-card dashboard-home-card dashboard-card-fill" {...cardFillEvents} data-testid={`home-${kind}-${entity.id}`}>
       <div className="dashboard-card-cover">
         <CardCover entity={entity} kind={kind} index={index} t={t} editable={false} onOpen={() => onOpen(entity.id)} openLabel={label} />
       </div>
@@ -26,17 +27,19 @@ function PreviewCard({ entity, kind, index, onOpen, onEdit, editable, disabled, 
           <span style={project ? { viewTransitionName: `project-${entity.id}` } : undefined}>{entity.name}</span>
         </button>
         <p className="dashboard-card-description" title={entity.description || entity.project_name || ''}>{entity.description || entity.project_name || '—'}</p>
-        <div className="dashboard-card-meta">
-          <span><Folder size={11} />{project ? t('dashboard.mapCount', { n: entity.map_count || 0 }) : entity.project_name || '—'}</span>
-          <span title={entity.updated_at}>{t('dashboard.modified', { date: relativeDate(entity.updated_at, lang) })}</span>
-        </div>
-        <div className="dashboard-project-row-actions">
-          <button type="button" className="dashboard-action-icon" disabled={!editable || disabled}
-            aria-label={t(project ? 'dashboard.editProjectNamed' : 'dashboard.editMapNamed', { name: entity.name })}
-            title={editable ? editLabel : permissionLabel}
-            onClick={onEdit}>
-            <Pencil size={14} />
-          </button>
+        <div className="dashboard-home-card-footer">
+          <div className="dashboard-card-meta">
+            <span><Folder size={11} />{project ? t('dashboard.mapCount', { n: entity.map_count || 0 }) : entity.project_name || '—'}</span>
+            <span title={entity.updated_at}>{t('dashboard.modified', { date: relativeDate(entity.updated_at, lang) })}</span>
+          </div>
+          <div className="dashboard-project-row-actions">
+            <button type="button" className="dashboard-action-icon" disabled={!editable || disabled}
+              aria-label={t(project ? 'dashboard.editProjectNamed' : 'dashboard.editMapNamed', { name: entity.name })}
+              title={editable ? editLabel : permissionLabel}
+              onClick={onEdit}>
+              <Pencil size={14} />
+            </button>
+          </div>
         </div>
       </div>
     </article>
@@ -48,7 +51,7 @@ export default function HomeOverview({ maps, projects, user, query, loading, lan
   const recentProjects = useMemo(() => recentMatches(projects, query), [projects, query]);
   const groups = [
     { kind: 'maps', items: recentMaps, title: 'dashboard.yourMaps', more: 'dashboard.moreMaps', hint: 'dashboard.homeAllMaps', empty: 'dashboard.homeEmptyMaps', onOpen: onMap, onMore: onMoreMaps },
-    { kind: 'projects', items: recentProjects, title: 'dashboard.projects', more: 'dashboard.moreProjects', hint: 'dashboard.homeAllProjects', empty: 'dashboard.homeEmptyProjects', onOpen: onProject, onMore: onMoreProjects },
+    { kind: 'projects', items: recentProjects, title: 'dashboard.yourProjects', more: 'dashboard.moreProjects', hint: 'dashboard.homeAllProjects', empty: 'dashboard.homeEmptyProjects', onOpen: onProject, onMore: onMoreProjects },
   ];
   return (
     <div className="dashboard-home-overview">
@@ -64,7 +67,7 @@ export default function HomeOverview({ maps, projects, user, query, loading, lan
             <Collection {...collectionProps} user={user} lang={lang} t={t} view="overview" onOpen={group.onOpen} onRefresh={onRefresh} onToast={onToast}
               renderOverview={({ onEdit, canEdit, disabled }) => <div className="dashboard-home-grid">
               {items.map((entity, index) => <PreviewCard key={entity.id} entity={entity} kind={group.kind} index={index} lang={lang} t={t} onOpen={group.onOpen} onEdit={() => onEdit(entity)} editable={canEdit(entity)} disabled={disabled} />)}
-              <button type="button" className="dashboard-home-more" onClick={group.onMore}>
+              <button type="button" className="dashboard-home-more dashboard-card-fill" {...cardFillEvents} onClick={group.onMore}>
                 <span className="dashboard-home-more-icon"><ArrowUpRight size={25} strokeWidth={1.4} /></span>
                 <strong>{t(group.more)}</strong>
                 <small>{t(group.hint)}</small>

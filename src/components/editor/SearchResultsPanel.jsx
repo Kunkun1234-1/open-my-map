@@ -1,9 +1,11 @@
 import { useLayoutEffect, useRef } from 'react';
 import { ArrowLeft, ChevronLeft, ChevronRight, Layers, LoaderCircle, MapPin, Plus, Route, Search, X } from 'lucide-react';
 import SearchPlaceCard, { compactPlaceCategory, safePlaceUrl } from './SearchPlaceCard.jsx';
+import { useI18n } from '../../i18n/index.jsx';
 import './search-my-maps.css';
 
 export default function SearchResultsPanel({ search, onDirections, onAdd, onClose, canAdd = true, layerName = '', compact = false, onReturnToLayers }) {
+  const { t } = useI18n();
   const listRef = useRef(null);
   const scrollRef = useRef(0);
   const previousPageRef = useRef(search.page);
@@ -21,9 +23,9 @@ export default function SearchResultsPanel({ search, onDirections, onAdd, onClos
   return (
     <section className={`place-search-panel my-maps-search-panel${compact ? ' compact' : ''}`} aria-label={detail ? '地点详情' : '地点搜索结果'}>
       <header className="place-panel-header">
-        {detail ? <button type="button" className="icon-button" onClick={search.backToResults} aria-label="返回搜索结果"><ArrowLeft size={18} /></button> : <Search size={17} />}
+        {detail ? <button type="button" className="icon-button" onClick={search.backToResults} aria-label={t('common.back')}><ArrowLeft size={18} /></button> : <Search size={17} />}
         <div><h2>{detail ? '地点详情' : '搜索结果'}</h2>{!detail && !search.loading && search.total > 0 ? <span>{search.total} 个地点</span> : null}</div>
-        {onReturnToLayers ? <button type="button" className="search-return-layers" onClick={onReturnToLayers} aria-label="返回图层" title="返回图层"><Layers size={16} /><span>图层</span></button> : null}
+        {onReturnToLayers ? <button type="button" className="search-return-layers" onClick={onReturnToLayers} aria-label={t('common.back')} title={t('common.back')}><Layers size={16} /><span>{t('common.back')}</span></button> : null}
         <button type="button" className="icon-button" onClick={onClose || search.clear} aria-label="关闭搜索面板"><X size={18} /></button>
       </header>
       {!detail && addAvailable ? <div className="search-results-layer-target">添加到当前图层：<b title={layerName || undefined}>{layerName || '当前选中的图层'}</b></div> : null}

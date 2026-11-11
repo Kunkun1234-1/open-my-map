@@ -1,28 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import {
-  ArrowDownUp,
   ArrowLeft,
   Bell,
   Check,
-  ChevronDown,
   Folder,
   Grid2X2,
+  List,
   Menu,
   Plus,
   Search,
   SlidersHorizontal,
-  Table2,
   Star,
   Trash2,
   Users,
   X,
 } from 'lucide-react';
 import { api } from '../api.js';
-import { navigate } from '../App.jsx';
 import { useAuth } from '../auth.jsx';
 import { useI18n } from '../i18n/index.jsx';
+import { goBack, navigate } from '../navigation.js';
 import LibrarySidebar from './library/LibrarySidebar.jsx';
+import LibrarySortMenu from './library/LibrarySortMenu.jsx';
 import LibraryHero from './library/LibraryHero.jsx';
 import HomeOverview from './library/HomeOverview.jsx';
 import LibraryDialog from './library/LibraryDialog.jsx';
@@ -31,23 +30,96 @@ import ProjectMembers from './library/ProjectMembers.jsx';
 import ProjectsTable from './library/ProjectsTable.jsx';
 import { relativeDate } from './library/helpers.js';
 import './library/dashboard.css';
+import './library/card-fill.css';
+
+const MAP_TABS = new Set(['all', 'created', 'shared', 'favorites', 'trash']);
+
+function readLibraryLocation() {
+  if (window.location.pathname !== '/') {
+    return { section: 'home', projectId: 'all', tab: 'all', view: 'grid' };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const requestedSection = params.get('section');
+  if (requestedSection === 'projects') {
+    return {
+      section: 'projects',
+      projectId: 'all',
+      tab: 'all',
+      view: params.get('view') === 'list' ? 'table' : 'grid',
+    };
+  }
+  if (requestedSection !== 'maps') {
+    return { section: 'home', projectId: 'all', tab: 'all', view: 'grid' };
+  }
+  const parsedProjectId = Number(params.get('project'));
+  const projectId = Number.isInteger(parsedProjectId) && parsedProjectId > 0
+    ? parsedProjectId
+    : 'all';
+  const requestedTab = params.get('tab');
+  const tab = requestedTab === 'owned'
+    ? 'created'
+    : MAP_TABS.has(requestedTab)
+      ? requestedTab
+      : 'all';
+  return {
+    section: tab === 'trash' ? 'trash' : 'maps',
+    projectId,
+    tab: projectId === 'all' ? tab : 'all',
+    view: params.get('view') === 'grid' ? 'grid' : 'table',
+  };
+}
+
+function libraryPath(section, projectId = 'all', tab = 'all', view) {
+  if (section === 'home') return '/';
+  const params = new URLSearchParams();
+  if (section === 'projects') {
+    params.set('section', 'projects');
+    if (view === 'table') params.set('view', 'list');
+  } else {
+    params.set('section', 'maps');
+    if (projectId !== 'all') params.set('project', String(projectId));
+    const nextTab = section === 'trash' ? 'trash' : tab;
+    if (nextTab !== 'all') params.set('tab', nextTab);
+    if (view === 'grid') params.set('view', 'grid');
+  }
+  return `/?${params.toString()}`;
+}
+
+function isCreatedByUser(map, user) {
+  if (!user) return false;
+  if (map.created_by_user_id != null && map.created_by_user_id !== '') {
+    return String(map.created_by_user_id) === String(user.id);
+  }
+  if (map.owner_user_id != null && map.owner_user_id !== '') {
+    return String(map.owner_user_id) === String(user.id);
+  }
+  if (user.role === 'admin') return false;
+  return map.my_role === 'owner' || Boolean(map.is_owner);
+}
 
 export default function MapLibrary() {
   const { user } = useAuth();
   const { t, lang } = useI18n();
+  const [initialLocation] = useState(readLibraryLocation);
   const [maps, setMaps] = useState([]);
   const [projects, setProjects] = useState([]);
   const [trashedMaps, setTrashedMaps] = useState([]);
-  const [section, setSection] = useState('home');
-  const [selectedProjectId, setSelectedProjectId] = useState('all');
+  const [section, setSection] = useState(initialLocation.section);
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    initialLocation.projectId,
+  );
   const [projectSwitching, setProjectSwitching] = useState(false);
-  const [activeTab, setActiveTab] = useState('all');
+  const [activeTab, setActiveTab] = useState(initialLocation.tab);
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('modified');
   const [basemapFilter, setBasemapFilter] = useState('all');
   const [filterOpen, setFilterOpen] = useState(false);
-  const [mapView, setMapView] = useState('grid');
-  const [projectView, setProjectView] = useState('grid');
+  const [mapView, setMapView] = useState(
+    initialLocation.view,
+  );
+  const [projectView, setProjectView] = useState(
+    initialLocation.section === 'projects' ? initialLocation.view : 'grid',
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -70,6 +142,26 @@ export default function MapLibrary() {
     projectTransitionSequence.current += 1;
     projectTransitionRef.current?.skipTransition();
     projectTransitionRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    const restoreLibraryLocation = () => {
+      const next = readLibraryLocation();
+      setSection(next.section);
+      setSelectedProjectId(next.projectId);
+      setActiveTab(next.tab);
+      setMapView(next.view);
+      if (next.section === 'projects') setProjectView(next.view);
+      else if (next.section === 'home') setProjectView('grid');
+      setProjectSwitching(false);
+      setMembersOpen(false);
+      setSidebarOpen(false);
+      setFilterOpen(false);
+      setQuery('');
+      setBasemapFilter('all');
+    };
+    window.addEventListener('popstate', restoreLibraryLocation);
+    return () => window.removeEventListener('popstate', restoreLibraryLocation);
   }, []);
 
   const loadLibrary = useCallback(async () => {
@@ -138,12 +230,7 @@ export default function MapLibrary() {
   const canCreateInProject = !selectedProject || editableProjects.some((project) => project.id === selectedProject.id);
   const isTrash = section === 'trash';
   const isProjects = section === 'projects';
-  const filterTab =
-    section === 'favorites'
-      ? 'favorites'
-      : section === 'shared'
-        ? 'shared'
-        : activeTab;
+  const filterTab = isTrash ? 'trash' : activeTab;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = useMemo(() => {
     const source = isTrash ? trashedMaps : maps;
@@ -164,10 +251,9 @@ export default function MapLibrary() {
         return false;
       if (!isTrash && filterTab === 'favorites' && !map.is_favorite)
         return false;
-      const owned =
-        map.is_owner || map.my_role === 'owner' || map.my_role === 'admin';
-      if (!isTrash && filterTab === 'owned' && !owned) return false;
-      if (!isTrash && filterTab === 'shared' && owned) return false;
+      const created = isCreatedByUser(map, user);
+      if (!isTrash && filterTab === 'created' && !created) return false;
+      if (!isTrash && filterTab === 'shared' && created) return false;
       return true;
     });
     return result.sort((a, b) =>
@@ -187,6 +273,7 @@ export default function MapLibrary() {
     filterTab,
     sort,
     lang,
+    user,
   ]);
   const visibleProjects = [...projects]
     .filter(
@@ -199,9 +286,10 @@ export default function MapLibrary() {
     .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
   const tabs = [
     ['all', t('library.tabAll')],
-    ['owned', t('dashboard.owned')],
+    ['created', t('dashboard.created')],
     ['shared', t('library.tabShared')],
     ['favorites', t('dashboard.favorites')],
+    ['trash', t('dashboard.trash')],
   ];
 
   const transitionProject = (update, switching = false) => {
@@ -230,19 +318,22 @@ export default function MapLibrary() {
     transition.finished.then(finish, finish);
   };
   const changeSection = (next) => {
+    const nextSection = next === 'trash' ? 'trash' : next;
+    const nextTab = next === 'trash' ? 'trash' : 'all';
     const update = () => {
-      setSection(next);
+      setSection(nextSection);
       setSelectedProjectId('all');
-      setActiveTab('all');
+      setActiveTab(nextTab);
       setBasemapFilter('all');
       setMembersOpen(false);
       setSidebarOpen(false);
       setFilterOpen(false);
       setQuery('');
-      setMapView(next === 'home' ? 'grid' : 'table');
-      if (next === 'home' || next === 'projects') setProjectView('grid');
+      setMapView(nextSection === 'home' ? 'grid' : 'table');
+      if (nextSection === 'home' || nextSection === 'projects') setProjectView('grid');
+      navigate(libraryPath(nextSection, 'all', nextTab));
     };
-    if (next === 'projects' && selectedProjectId !== 'all') {
+    if (nextSection === 'projects' && selectedProjectId !== 'all') {
       transitionProject(update);
     } else {
       projectTransitionSequence.current += 1;
@@ -252,9 +343,34 @@ export default function MapLibrary() {
       update();
     }
   };
+  const changeMapTab = (nextTab) => {
+    const nextSection = nextTab === 'trash' ? 'trash' : 'maps';
+    setSection(nextSection);
+    setSelectedProjectId('all');
+    setActiveTab(nextTab);
+    setBasemapFilter('all');
+    setMembersOpen(false);
+    setFilterOpen(false);
+    setQuery('');
+    navigate(libraryPath(nextSection, 'all', nextTab, mapView));
+  };
+  const changeMapView = (nextView) => {
+    setMapView(nextView);
+    navigate(
+      libraryPath(section, selectedProjectId, filterTab, nextView),
+      { replace: true },
+    );
+  };
+  const changeProjectView = (nextView) => {
+    setProjectView(nextView);
+    navigate(libraryPath('projects', 'all', 'all', nextView), {
+      replace: true,
+    });
+  };
   const chooseProject = (projectId) => {
     const update = () => {
-      setSelectedProjectId(Number(projectId));
+      const nextProjectId = Number(projectId);
+      setSelectedProjectId(nextProjectId);
       setSection('maps');
       setMapView('table');
       setActiveTab('all');
@@ -263,6 +379,7 @@ export default function MapLibrary() {
       setFilterOpen(false);
       setMembersOpen(false);
       setSidebarOpen(false);
+      navigate(libraryPath('maps', nextProjectId, 'all'));
     };
     if (selectedProjectId === Number(projectId) && section === 'maps') {
       update();
@@ -466,7 +583,7 @@ export default function MapLibrary() {
             >
               {selectedProject && !isTrash ? (
                 <div className="dashboard-project-breadcrumb">
-                  <button type="button" onClick={() => changeSection('projects')}><ArrowLeft size={15} />{t('dashboard.backToProjects')}</button>
+                  <button type="button" onClick={() => goBack('/')}><ArrowLeft size={15} />{t('common.back')}</button>
                   <span>/</span>
                   <span>{selectedProject.name}</span>
                   <small>{t('dashboard.mapCount', { n: selectedProject.map_count || 0 })}</small>
@@ -479,7 +596,7 @@ export default function MapLibrary() {
                       ? t('dashboard.trash')
                       : selectedProject?.name || t('dashboard.yourMaps')}
                   </h2>
-                  {!isTrash && !selectedProject ? (
+                  {!selectedProject || isTrash ? (
                     <nav
                       className="dashboard-map-tabs"
                       aria-label={t('dashboard.yourMaps')}
@@ -488,11 +605,7 @@ export default function MapLibrary() {
                         <button
                           key={key}
                           className={filterTab === key ? 'active' : ''}
-                          onClick={() => {
-                            setActiveTab(key);
-                            if (section === 'favorites' || section === 'shared')
-                              setSection('maps');
-                          }}
+                          onClick={() => changeMapTab(key)}
                           aria-pressed={filterTab === key}
                         >
                           {label}
@@ -503,26 +616,10 @@ export default function MapLibrary() {
                 </div>
                 <div className="dashboard-view-actions">
                   <div className="dashboard-view-toggle" role="group" aria-label={t('dashboard.mapViews')}>
-                    <button type="button" className={mapView === 'grid' ? 'active' : ''} onClick={() => setMapView('grid')} aria-label={t('dashboard.gridView')} aria-pressed={mapView === 'grid'} title={t('dashboard.gridView')}><Grid2X2 size={15} /></button>
-                    <button type="button" className={mapView === 'table' ? 'active' : ''} onClick={() => setMapView('table')} aria-label={t('dashboard.tableView')} aria-pressed={mapView === 'table'} title={t('dashboard.tableView')}><Table2 size={15} /></button>
+                    <button type="button" className={mapView === 'grid' ? 'active' : ''} onClick={() => changeMapView('grid')} aria-label={t('dashboard.gridView')} aria-pressed={mapView === 'grid'} title={t('dashboard.gridView')}><Grid2X2 size={15} /></button>
+                    <button type="button" className={mapView === 'table' ? 'active' : ''} onClick={() => changeMapView('table')} aria-label={t('dashboard.listView')} aria-pressed={mapView === 'table'} title={t('dashboard.listView')}><List size={16} /></button>
                   </div>
-                  <label className="dashboard-sort">
-                    <ArrowDownUp size={14} />
-                    <select
-                      value={sort}
-                      onChange={(event) => setSort(event.target.value)}
-                      aria-label={t('library.sort')}
-                    >
-                      <option value="modified">
-                        {t('dashboard.lastModified')}
-                      </option>
-                      <option value="oldest">
-                        {t('dashboard.oldestFirst')}
-                      </option>
-                      <option value="name">{t('dashboard.nameAZ')}</option>
-                    </select>
-                    <ChevronDown size={13} />
-                  </label>
+                  <LibrarySortMenu value={sort} onChange={setSort} t={t} />
                   <button
                     className={`dashboard-filter-button${filterOpen ? ' active' : ''}`}
                     onClick={() => setFilterOpen((value) => !value)}
@@ -546,11 +643,6 @@ export default function MapLibrary() {
                   ) : null}
                 </div>
               </div>
-              {isTrash ? (
-                <p className="dashboard-section-description">
-                  {t('dashboard.trashHint')}
-                </p>
-              ) : null}
               {filterOpen ? (
                 <div className="dashboard-filter-panel">
                   <label>
@@ -668,20 +760,22 @@ export default function MapLibrary() {
                       {!isTrash && canCreateInProject && !normalizedQuery && basemapFilter === 'all' ? <button className="dashboard-secondary" onClick={openCreateMap}><Plus size={15} />{t('library.createMap')}</button> : null}
                     </div>
                   ) : null}
-                  <MapsTable
-                    key={isTrash ? 'trash' : 'active'}
-                    maps={filtered}
-                    user={user}
-                    lang={lang}
-                    t={t}
-                    trashed={isTrash}
-                    view={mapView}
-                    onOpen={(mapId) => navigate(`/maps/${mapId}`)}
-                    onPreview={(mapId) => navigate(`/maps/${mapId}?preview=1`)}
-                    onCreateMap={canCreateInProject && filterTab === 'all' && !normalizedQuery && basemapFilter === 'all' ? openCreateMap : undefined}
-                    onRefresh={loadLibrary}
-                    onToast={setToast}
-                  />
+                  {filtered.length > 0 ? (
+                    <MapsTable
+                      key={isTrash ? 'trash' : 'active'}
+                      maps={filtered}
+                      user={user}
+                      lang={lang}
+                      t={t}
+                      trashed={isTrash}
+                      view={mapView}
+                      onOpen={(mapId) => navigate(`/maps/${mapId}`)}
+                      onPreview={(mapId) => navigate(`/maps/${mapId}?preview=1`)}
+                      onCreateMap={canCreateInProject && filterTab === 'all' && !normalizedQuery && basemapFilter === 'all' ? openCreateMap : undefined}
+                      onRefresh={loadLibrary}
+                      onToast={setToast}
+                    />
+                  ) : null}
                 </>
               )}
             </section>
@@ -694,8 +788,8 @@ export default function MapLibrary() {
                 </h2>
                 <div className="dashboard-projects-actions">
                   <div className="dashboard-view-toggle" role="group" aria-label={t('dashboard.projectViews')}>
-                    <button type="button" className={projectView === 'grid' ? 'active' : ''} onClick={() => setProjectView('grid')} aria-label={t('dashboard.projectGridView')} aria-pressed={projectView === 'grid'} title={t('dashboard.projectGridView')}><Grid2X2 size={15} /></button>
-                    <button type="button" className={projectView === 'table' ? 'active' : ''} onClick={() => setProjectView('table')} aria-label={t('dashboard.projectTableView')} aria-pressed={projectView === 'table'} title={t('dashboard.projectTableView')}><Table2 size={15} /></button>
+                    <button type="button" className={projectView === 'grid' ? 'active' : ''} onClick={() => changeProjectView('grid')} aria-label={t('dashboard.projectGridView')} aria-pressed={projectView === 'grid'} title={t('dashboard.projectGridView')}><Grid2X2 size={15} /></button>
+                    <button type="button" className={projectView === 'table' ? 'active' : ''} onClick={() => changeProjectView('table')} aria-label={t('dashboard.projectListView')} aria-pressed={projectView === 'table'} title={t('dashboard.projectListView')}><List size={16} /></button>
                   </div>
                   <button className="dashboard-secondary compact" onClick={() => openDialog('project')}><Plus size={15} />{t('library.createProject')}</button>
                 </div>

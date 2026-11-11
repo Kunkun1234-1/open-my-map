@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 import { navigate } from '../App.jsx';
+import { goBack } from '../navigation.js';
 import { useAuth } from '../auth.jsx';
 import { LanguageSwitch, useI18n } from '../i18n/index.jsx';
 import { formatDate } from '../utils.js';
@@ -110,7 +111,7 @@ function AdminLogin({ error, onLogin }) {
           <button className="admin-primary-button">{t('admin.brand')}</button>
         </form>
         <button className="admin-text-button login-back" onClick={() => navigate('/login')}><ArrowLeft size={16} />{t('login.submitLogin')}</button>
-        <button className="admin-text-button login-back" onClick={() => navigate('/')}><ArrowLeft size={16} />{t('admin.backLibrary')}</button>
+        <button className="admin-text-button login-back" onClick={() => goBack()}><ArrowLeft size={16} />{t('admin.backLibrary')}</button>
       </section>
     </main>
   );
@@ -187,7 +188,7 @@ function Sidebar({ active, open, onNavigate, onClose }) {
       </nav>
       <div className="admin-sidebar-bottom">
         <span><i />{t('admin.dbOnline')}</span>
-        <button type="button" onClick={() => navigate('/')}><ArrowLeft size={16} />{t('admin.backLibrary')}</button>
+        <button type="button" onClick={() => goBack()}><ArrowLeft size={16} />{t('admin.backLibrary')}</button>
       </div>
     </aside>
   </>;
@@ -246,7 +247,7 @@ function Overview({ data, query, onOpenProject, onBackup }) {
 
         <section className="admin-panel admin-activity-panel">
           <header><h2>最近活动</h2></header>
-          <div>
+          <div className="admin-activity-list">
             {data.audit.slice(0, showAllActivity ? 12 : 5).map((log) => (
               <div className="admin-activity-row" key={log.id}>
                 <span className={`activity-icon ${log.action}`}><Activity size={15} /></span>

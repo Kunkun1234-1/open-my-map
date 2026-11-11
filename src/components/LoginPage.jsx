@@ -3,6 +3,7 @@ import { ArrowLeft, Mail, UserPlus } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { navigate } from '../App.jsx';
+import { canGoBack, goBack } from '../navigation.js';
 import { LanguageSwitch, useI18n } from '../i18n/index.jsx';
 
 export default function LoginPage() {
@@ -114,9 +115,9 @@ export default function LoginPage() {
             {isRegister ? t('login.switchToLogin') : t('login.switchToRegister')}
           </button>
         )}
-        <button className="admin-text-button login-back" onClick={() => navigate('/')}>
+        {canGoBack() && !window.history.state?.loggedOut ? <button className="admin-text-button login-back" onClick={() => goBack('/login')}>
           <ArrowLeft size={16} />{t('login.backLibrary')}
-        </button>
+        </button> : null}
       </section>
     </main>
   );

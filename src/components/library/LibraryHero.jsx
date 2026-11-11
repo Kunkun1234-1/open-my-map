@@ -1,6 +1,7 @@
+import { useEffect, useRef } from 'react';
 import { ArrowLeft, ArrowRight, Folder, Plus } from 'lucide-react';
 import useProtectedImage from '../../useProtectedImage.js';
-import { getHeroTitle } from './heroContent.js';
+import { getHeroTitle, getHomeSlides } from './heroContent.js';
 import './asset-feedback.css';
 
 export default function LibraryHero({
@@ -12,13 +13,30 @@ export default function LibraryHero({
   user,
   backgroundUrlOverride,
   titlesOverride,
+  slidesOverride,
 }) {
-  const savedBackground = useProtectedImage(backgroundUrlOverride === undefined ? user?.homeBackgroundUrl : '');
+  const slides = slidesOverride?.length ? slidesOverride : getHomeSlides(user);
+  const activeIndex = Math.min(Math.max(0, slide), slides.length - 1);
+  const activeSlide = slides[activeIndex];
+  const savedBackground = useProtectedImage(backgroundUrlOverride === undefined ? activeSlide.backgroundUrl : '');
   const background = backgroundUrlOverride ?? savedBackground.url;
-  const title = getHeroTitle(t, slide, titlesOverride ?? user?.homeHeroTitles);
+  const title = getHeroTitle(t, activeIndex, titlesOverride ?? slides.map((item) => item.title));
+  const dotsRef = useRef(null);
+  useEffect(() => {
+    const dots = dotsRef.current;
+    const activeDot = dots?.children[activeIndex];
+    if (!dots || !activeDot) return;
+    const left = activeDot.offsetLeft - dots.offsetLeft;
+    if (left < dots.scrollLeft) dots.scrollLeft = left;
+    else if (left + activeDot.offsetWidth > dots.scrollLeft + dots.clientWidth) {
+      dots.scrollLeft = left + activeDot.offsetWidth - dots.clientWidth;
+    }
+  }, [activeIndex, slides.length]);
   return (
     <section
-      className={`dashboard-hero dashboard-hero--${slide}`}
+      className={`dashboard-hero dashboard-hero--${activeIndex}`}
+      data-slide-id={activeSlide.id}
+      aria-roledescription="carousel"
       aria-label={title.replace(/\n/g, ' ')}
       style={background ? { backgroundImage: `url(${JSON.stringify(background)})` } : undefined}
     >
@@ -45,34 +63,36 @@ export default function LibraryHero({
           </button>
         </div>
       ) : null}
-      <div className="dashboard-hero-pagination">
-        <div className="dashboard-hero-dots">
-          {[0, 1, 2].map((value) => (
+      {slides.length > 1 ? <div className="dashboard-hero-pagination">
+        <div className="dashboard-hero-dots" ref={dotsRef}>
+          {slides.map((item, value) => (
             <button
-              key={value}
-              className={value === slide ? 'active' : ''}
+              key={item.id}
+              className={value === activeIndex ? 'active' : ''}
               onClick={() => setSlide(value)}
               aria-label={t('dashboard.slide', { n: value + 1 })}
-              aria-pressed={value === slide}
+              aria-pressed={value === activeIndex}
             />
           ))}
         </div>
-        <span>0{slide + 1} / 03</span>
+        <span>{String(activeIndex + 1).padStart(2, '0')} / {String(slides.length).padStart(2, '0')}</span>
         <button
           className="dashboard-carousel-arrow"
-          onClick={() => setSlide((slide + 2) % 3)}
+          onClick={() => setSlide((activeIndex + slides.length - 1) % slides.length)}
           aria-label={t('dashboard.previousSlide')}
+          title={t('dashboard.previousSlide')}
         >
-          <ArrowLeft size={15} />
+          <ArrowLeft size={18} />
         </button>
         <button
           className="dashboard-carousel-arrow next"
-          onClick={() => setSlide((slide + 1) % 3)}
+          onClick={() => setSlide((activeIndex + 1) % slides.length)}
           aria-label={t('dashboard.nextSlide')}
+          title={t('dashboard.nextSlide')}
         >
-          <ArrowRight size={15} />
+          <ArrowRight size={18} />
         </button>
-      </div>
+      </div> : null}
     </section>
   );
 }

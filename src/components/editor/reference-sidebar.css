@@ -18,7 +18,7 @@
 .editor-page .editor-sidebar .map-title-input:focus { outline: none; box-shadow: 0 1px #4285f4; }
 .editor-page .editor-sidebar .map-menu-anchor { width: 24px; height: 28px; }
 .editor-page .editor-sidebar .map-menu-anchor > .icon-button { width: 24px; height: 28px; color: #808080; }
-.editor-page .editor-sidebar .map-description-input { display: block; box-sizing: border-box; width: 100%; min-height: 18px; max-height: 54px; margin: 4px 0 0; padding: 0; resize: none; border: 0; border-radius: 0; background: transparent; color: #777; font-size: 12px; line-height: 18px; }
+.editor-page .editor-sidebar .map-description-input { display: block; box-sizing: border-box; width: 100%; min-height: 18px; max-height: 144px; margin: 4px 0 0; padding: 0; overflow-y: auto; overflow-wrap: anywhere; resize: none; border: 0; border-radius: 0; background: transparent; color: #777; font-size: 12px; line-height: 18px; }
 .editor-page .editor-sidebar .map-description-input::placeholder { color: #999; }
 .editor-page .editor-sidebar .map-description-input:focus { outline: none; box-shadow: 0 1px #4285f4; }
 .editor-page .editor-sidebar .save-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: #777; font-size: 11px; line-height: 18px; }

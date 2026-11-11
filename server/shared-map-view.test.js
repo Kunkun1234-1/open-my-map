@@ -66,3 +66,15 @@ test('story moves support both directions and ignore invalid drops without mutat
   assert.equal(moveStoryRecord(ids, 12, 12), ids);
   assert.deepEqual(ids, [11, 12, 21]);
 });
+
+test('story reordering changes the visible sequence even with hidden records between targets', () => {
+  const order = ['first', 'hidden', 'last'];
+  const visible = (ids) => ids.filter((id) => id !== 'hidden');
+  const forward = moveStoryRecord(order, 'first', 'last');
+  const backward = moveStoryRecord(order, 'last', 'first');
+  assert.deepEqual(visible(forward), ['last', 'first']);
+  assert.deepEqual(visible(backward), ['last', 'first']);
+  assert.equal(forward.filter((id) => id === 'hidden').length, 1);
+  assert.equal(backward.filter((id) => id === 'hidden').length, 1);
+  assert.deepEqual(order, ['first', 'hidden', 'last']);
+});

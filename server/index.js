@@ -19,8 +19,12 @@ import {
   createContentCheckpoint, restoreContentCheckpoint,
   saveMapDirections, validateDirectionsPayload,
   updateUserAvatar,
-  updateUserHomeBackground,
+  updateUserHomeSlideBackground,
+  updateUserHomeSlides,
   updateUserHomeHeroTitles,
+  getUserHomeSlides,
+  resolveUserHomeSlide,
+  isHomeBackgroundStoredNameInUse,
   validateCustomColumns, validateFeatureProperties, reconcileFeatureCustomData,
 } from './db.js';
 import {
@@ -332,6 +336,14 @@ function deleteHomeBackgroundFile(storedName) {
   if (storedName) safeUnlink(homeBackgroundPath(storedName));
 }
 
+function deleteUnusedHomeBackgroundFiles(storedNames = []) {
+  for (const storedName of new Set(storedNames.filter(Boolean))) {
+    if (!isHomeBackgroundStoredNameInUse(storedName)) {
+      deleteHomeBackgroundFile(storedName);
+    }
+  }
+}
+
 function projectMetadataInput(body) {
   const metadata = {};
   for (const key of ['name', 'description']) {
@@ -426,17 +438,69 @@ function cleanOriginalName(value) {
   return cleaned.slice(0, 180) || 'media';
 }
 
+function normalizeHomeSlideTitle(title) {
+  if (typeof title !== 'string') throw httpError('每个主页标题必须为字符串');
+  const normalized = title.replace(/\r\n?/g, '\n').trim();
+  if (normalized.length > 120) throw httpError('每个主页标题不能超过 120 个字符');
+  if (normalized.split('\n').length > 2) throw httpError('每个主页标题最多 2 行');
+  return normalized;
+}
+
 function normalizeHomeHeroTitles(value) {
   if (!Array.isArray(value)) throw httpError('titles 必须为数组');
   if (value.length === 0) return ['', '', ''];
   if (value.length !== 3) throw httpError('titles 必须包含 3 个标题');
-  return value.map((title) => {
-    if (typeof title !== 'string') throw httpError('每个主页标题必须为字符串');
-    const normalized = title.replace(/\r\n?/g, '\n').trim();
-    if (normalized.length > 120) throw httpError('每个主页标题不能超过 120 个字符');
-    if (normalized.split('\n').length > 2) throw httpError('每个主页标题最多 2 行');
-    return normalized;
+  return value.map(normalizeHomeSlideTitle);
+}
+
+function normalizeHomeSlides(value) {
+  if (!Array.isArray(value)) throw httpError('slides 必须为数组');
+  if (value.length === 0) throw httpError('主页轮播至少需要保留 1 张');
+  if (value.length > 100) throw httpError('主页轮播不能超过 100 张');
+  const ids = new Set();
+  return value.map((slide) => {
+    if (!slide || typeof slide !== 'object' || Array.isArray(slide)) {
+      throw httpError('每张主页轮播必须包含 id 和 title');
+    }
+    const idValue = typeof slide.id === 'string' ? slide.id.trim() : '';
+    if (
+      !/^[A-Za-z0-9_-]{1,64}$/.test(idValue) ||
+      /^\d+$/.test(idValue)
+    ) {
+      throw httpError('主页轮播 id 格式无效');
+    }
+    if (ids.has(idValue)) throw httpError('主页轮播 id 不能重复');
+    ids.add(idValue);
+    return { id: idValue, title: normalizeHomeSlideTitle(slide.title) };
   });
+}
+
+function parseHomeSlideReference(req) {
+  if (!Object.hasOwn(req.query || {}, 'slide')) return null;
+  const reference = req.query.slide;
+  if (
+    typeof reference !== 'string' ||
+    !reference ||
+    (!/^[0-2]$/.test(reference) && !/^[A-Za-z0-9_-]{1,64}$/.test(reference))
+  ) {
+    throw httpError('无效主页轮播 id');
+  }
+  return reference;
+}
+
+function resolveHomeBackgroundSlide(req, res, next) {
+  try {
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    if (!row) return notFound(res, '用户不存在');
+    const reference = parseHomeSlideReference(req);
+    const slide = reference == null ? null : resolveUserHomeSlide(row, reference);
+    if (reference != null && !slide) return notFound(res, '主页轮播页不存在');
+    req.homeBackgroundUserRow = row;
+    req.homeSlideId = slide?.id || null;
+    next();
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
 }
 
 app.get('/api/health', (req, res) => res.json({ ok: true, service: 'open-my-map', time: now() }));
@@ -489,36 +553,57 @@ app.get('/api/users/:userId/avatar', requireUser, (req, res) => {
   return sendAvatar(req, res, user.avatar_stored_name);
 });
 
-app.get('/api/auth/me/home-background', requireUser, (req, res) => {
-  const user = db.prepare('SELECT home_background_stored_name FROM users WHERE id = ?').get(req.user.id);
-  if (!user) return notFound(res, '用户不存在');
-  return sendHomeBackground(req, res, user.home_background_stored_name);
+app.get('/api/auth/me/home-background', requireUser, resolveHomeBackgroundSlide, (req, res) => {
+  const slides = getUserHomeSlides(req.homeBackgroundUserRow);
+  const slide = req.homeSlideId
+    ? slides.find((item) => item.id === req.homeSlideId)
+    : slides[0];
+  return sendHomeBackground(req, res, slide?.backgroundStoredName);
 });
 
-app.post('/api/auth/me/home-background', requireUser, singleHomeBackgroundUpload, asyncRoute(async (req, res) => {
+app.post('/api/auth/me/home-background', requireUser, resolveHomeBackgroundSlide, singleHomeBackgroundUpload, asyncRoute(async (req, res) => {
   const storedName = await prepareHomeBackgroundFile(req.file);
-  const current = db.prepare('SELECT home_background_stored_name, status FROM users WHERE id = ?').get(req.user.id);
-  if (!current) throw httpError('用户不存在', 404);
+  const current = req.homeBackgroundUserRow;
   if (current.status !== 'active') throw httpError('该账号已停用', 403);
   const destination = homeBackgroundPath(storedName);
   renameSync(req.file.path, destination);
   let updated;
   try {
-    updated = updateUserHomeBackground(req.user.id, storedName);
+    updated = updateUserHomeSlideBackground(
+      req.user.id,
+      req.homeSlideId,
+      storedName,
+    );
   } catch (error) {
     deleteHomeBackgroundFile(storedName);
     throw error;
   }
-  deleteHomeBackgroundFile(updated.previousHomeBackgroundStoredName);
-  audit('home-background', 'user', req.user.id, '更新主页背景图片');
+  deleteUnusedHomeBackgroundFiles(updated.previousHomeBackgroundStoredNames);
+  audit(
+    'home-background',
+    'user',
+    req.user.id,
+    req.homeSlideId ? `更新主页轮播 ${req.homeSlideId} 背景图片` : '更新全部主页轮播背景图片',
+  );
   res.json({ user: updated.user });
 }));
 
-app.delete('/api/auth/me/home-background', requireUser, (req, res) => {
+app.delete('/api/auth/me/home-background', requireUser, resolveHomeBackgroundSlide, (req, res) => {
   try {
-    const updated = updateUserHomeBackground(req.user.id, null);
-    deleteHomeBackgroundFile(updated.previousHomeBackgroundStoredName);
-    if (updated.previousHomeBackgroundStoredName) audit('reset-home-background', 'user', req.user.id, '恢复默认主页背景图片');
+    const updated = updateUserHomeSlideBackground(
+      req.user.id,
+      req.homeSlideId,
+      null,
+    );
+    deleteUnusedHomeBackgroundFiles(updated.previousHomeBackgroundStoredNames);
+    if (updated.previousHomeBackgroundStoredNames.length) {
+      audit(
+        'reset-home-background',
+        'user',
+        req.user.id,
+        req.homeSlideId ? `恢复主页轮播 ${req.homeSlideId} 默认背景` : '恢复全部主页轮播默认背景',
+      );
+    }
     res.json({ user: updated.user });
   } catch (error) {
     res.status(error.status || 400).json({ error: error.message });
@@ -527,9 +612,19 @@ app.delete('/api/auth/me/home-background', requireUser, (req, res) => {
 
 app.patch('/api/auth/me/home-appearance', requireUser, (req, res) => {
   try {
-    const titles = normalizeHomeHeroTitles(req.body?.titles);
-    const user = updateUserHomeHeroTitles(req.user.id, titles);
-    audit('home-appearance', 'user', req.user.id, '更新主页轮播标题');
+    let user;
+    let removedHomeBackgroundStoredNames = [];
+    if (Object.hasOwn(req.body || {}, 'slides')) {
+      const slides = normalizeHomeSlides(req.body.slides);
+      const updated = updateUserHomeSlides(req.user.id, slides);
+      user = updated.user;
+      removedHomeBackgroundStoredNames = updated.removedHomeBackgroundStoredNames;
+    } else {
+      const titles = normalizeHomeHeroTitles(req.body?.titles);
+      user = updateUserHomeHeroTitles(req.user.id, titles);
+    }
+    deleteUnusedHomeBackgroundFiles(removedHomeBackgroundStoredNames);
+    audit('home-appearance', 'user', req.user.id, '更新主页轮播内容');
     res.json({ user });
   } catch (error) {
     res.status(error.status || 400).json({ error: error.message });

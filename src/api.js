@@ -96,8 +96,15 @@ export const api = {
   fetchCover: fetchProtectedImage,
   fetchAvatar: fetchProtectedImage,
   fetchImage: fetchProtectedImage,
-  uploadHomeBackground: (file) => uploadMedia('/api/auth/me/home-background', [file], 'file'),
-  resetHomeBackground: () => request('/api/auth/me/home-background', { method: 'DELETE' }),
+  uploadHomeBackground: (file, slideId) => uploadMedia(
+    `/api/auth/me/home-background${slideId ? `?slide=${encodeURIComponent(slideId)}` : ''}`,
+    [file],
+    'file',
+  ),
+  resetHomeBackground: (slideId) => request(
+    `/api/auth/me/home-background${slideId ? `?slide=${encodeURIComponent(slideId)}` : ''}`,
+    { method: 'DELETE' },
+  ),
   updateHomeAppearance: (body) => request('/api/auth/me/home-appearance', { method: 'PATCH', body: JSON.stringify(body) }),
   uploadAvatar: (file) => uploadMedia('/api/auth/me/avatar', [file], 'file'),
   resetAvatar: () => request('/api/auth/me/avatar', { method: 'DELETE' }),

@@ -8,7 +8,9 @@ import { nearestRouteSegment, geometryCoordinates, safeStorageBounds, viewportPa
 import { getMarkerIcon, MARKER_ICON_IDS } from './marker-icons.js';
 import { draftShapeGeometry, SHAPE_TOOLS } from './editor/shape-drawing.js';
 import { lineArrowLayout } from './editor/line-direction.js';
+import { createMapSceneBlend } from './map-scene-blend.js';
 import './editor.css';
+import './map-scene-blend.css';
 
 export const AMAP_MIN_ZOOM = 2;
 export const AMAP_MAX_ZOOM = 19;
@@ -253,21 +255,114 @@ function updateFeatureOverlay(record, feature, layer, selected) {
 }
 
 function buildController(AMap, map, registry, reportZoom, options = {}) {
+  let focusFrame = null;
+  let focusBlend = null;
+  let focusMoving = false;
+  const cancelFocusMotion = () => {
+    if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
+    focusFrame = null;
+    focusMoving = false;
+    focusBlend?.remove();
+    focusBlend = null;
+    options.onScenePhase?.(null);
+  };
   const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const motion = () => ({ immediately: Boolean(reducedMotion()), duration: reducedMotion() ? 0 : 1000 });
-  const beginMove = () => options.beforeMove?.();
-  const paddedPan = (position, immediate = false) => {
+  const beginMove = () => { cancelFocusMotion(); options.beforeMove?.(); };
+  const scenePan = (center) => {
+    const pixel = map.lngLatToContainer?.(center);
+    if (!pixel || !map.containerToLngLat) return false;
+    const rect = map.getContainer().getBoundingClientRect();
+    const dx = pixel.x - rect.width / 2;
+    const dy = pixel.y - rect.height / 2;
+    const travel = Math.hypot(dx, dy);
+    if (travel < 1) {
+      map.setCenter(center, true, 0);
+      return true;
+    }
+    const position = (value) => [value.getLng?.() ?? value.lng ?? value[0], value.getLat?.() ?? value.lat ?? value[1]];
+    const start = position(map.containerToLngLat(new AMap.Pixel(rect.width / 2, rect.height / 2)));
+    const target = position(center);
+    // Interpolate in Web Mercator, including the short way across the dateline.
+    const mercatorY = (lat) => Math.log(Math.tan(Math.PI / 4 + Math.max(-85, Math.min(85, lat)) * Math.PI / 360));
+    const interpolate = (from, to, progress) => {
+      const delta = ((to[0] - from[0] + 540) % 360) - 180;
+      const y = mercatorY(from[1]) + (mercatorY(to[1]) - mercatorY(from[1])) * progress;
+      return [from[0] + delta * progress, (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI];
+    };
+    const nearbyTarget = travel <= Math.min(rect.width, rect.height) * .4;
+    const distance = Math.min(32, rect.width / 16, rect.height / 12, travel / 3);
+    const offsetX = dx / travel * distance;
+    const offsetY = dy / travel * distance;
+    const departure = position(map.containerToLngLat(new AMap.Pixel(rect.width / 2 + offsetX, rect.height / 2 + offsetY)));
+    const nearby = position(map.containerToLngLat(new AMap.Pixel(pixel.x - offsetX, pixel.y - offsetY)));
+    const legDuration = 1200;
+    const nearDuration = 800;
+    const blendDuration = 200;
+    let startedAt;
+    let cutAt;
+    let cut = false;
+    let arrived = false;
+    focusMoving = true;
+    options.onScenePhase?.(nearbyTarget ? 'near' : 'depart');
+    const step = (now) => {
+      if (startedAt === undefined) startedAt = now;
+      const elapsed = now - startedAt;
+      if (nearbyTarget) {
+        const progress = Math.min(1, elapsed / nearDuration);
+        const eased = progress * progress * (3 - 2 * progress);
+        if (progress === 1) focusMoving = false;
+        map.setCenter(progress === 1 ? center : interpolate(start, target, eased), true, 0);
+        if (progress === 1) { cancelFocusMotion(); return; }
+      } else if (elapsed < legDuration) {
+        const progress = elapsed / legDuration;
+        map.setCenter(interpolate(start, departure, progress * progress), true, 0);
+      } else {
+        if (!cut) {
+          cut = true;
+          cutAt = now;
+          focusBlend = options.captureScene?.() || null;
+          options.onScenePhase?.('blend');
+        }
+        // Reset the phase clock at the actual cut: a background/throttled tab
+        // must not skip the arrival animation or flash its final frame.
+        const incoming = now - cutAt;
+        const progress = Math.min(1, incoming / legDuration);
+        const eased = 1 - (1 - progress) ** 2;
+        if (progress === 1) focusMoving = false;
+        map.setCenter(progress === 1 ? center : interpolate(nearby, target, eased), true, 0);
+        if (incoming < blendDuration) {
+          focusBlend?.update(incoming / blendDuration, offsetX * 2 * incoming / legDuration, offsetY * 2 * incoming / legDuration);
+        } else if (!arrived) {
+          focusBlend?.remove();
+          focusBlend = null;
+          arrived = true;
+          options.onScenePhase?.('arrive');
+        }
+        if (progress === 1) { cancelFocusMotion(); return; }
+      }
+      focusFrame = window.requestAnimationFrame(step);
+    };
+    focusFrame = window.requestAnimationFrame(step);
+    return true;
+  };
+  const paddedPan = (position, immediate = false, drift = false) => {
     const { immediately, duration } = immediate ? { immediately: true, duration: 0 } : motion();
     const padding = viewportPadding(map.getContainer());
     // Shift the requested point into the visible map area rather than beneath
     // the left drawer or the mobile details sheet.
     const pixel = map.lngLatToContainer?.(position);
+    let center = position;
     if (pixel && map.containerToLngLat) {
       const adjusted = new AMap.Pixel(pixel.x - (padding[2] - padding[3]) / 2, pixel.y - (padding[0] - padding[1]) / 2);
-      map.setCenter(map.containerToLngLat(adjusted), immediately, duration);
-    } else map.setCenter(position, immediately, duration);
+      center = map.containerToLngLat(adjusted);
+    }
+    if (drift && !immediately && scenePan(center)) return;
+    map.setCenter(center, immediately, duration);
   };
   return {
+    cancelFocusMotion,
+    isFocusMoving: () => focusMoving,
     getCenter() {
       const center = map.getCenter();
       const [lng, lat] = toStorageLngLat(center.getLng(), center.getLat());
@@ -342,14 +437,21 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
       }
       reportZoom();
     },
-    focusFeature(featureId, { immediate = false } = {}) {
+    focusFeature(featureId, { immediate = false, drift = false } = {}) {
       const record = registry.current.get(featureId);
       if (!record) return;
       beginMove();
       if (record.type === 'Point') {
-        paddedPan(record.overlay.getPosition(), immediate);
+        paddedPan(record.overlay.getPosition(), immediate, drift);
       } else {
-        map.setFitView([record.overlay], immediate || Boolean(reducedMotion()), viewportPadding(map.getContainer()), 18);
+        const padding = viewportPadding(map.getContainer());
+        const bounds = record.overlay.getBounds?.();
+        if (drift) {
+          const center = bounds?.getCenter?.();
+          if (center) paddedPan(center, immediate, drift);
+          return;
+        }
+        map.setFitView([record.overlay], immediate || Boolean(reducedMotion()), padding, 18);
       }
     },
     zoomIn() {
@@ -634,12 +736,19 @@ export default function AmapMap({
             center: controllerRef.current.getCenter(),
             bounds: controllerRef.current.getBounds(),
             zoom: map.getZoom(),
-            source: viewSource,
+            source: controllerRef.current.isFocusMoving() ? 'programmatic' : viewSource,
           });
-          viewSource = 'user';
+          if (!controllerRef.current.isFocusMoving()) viewSource = 'user';
         });
       };
-      controllerRef.current = buildController(AMap, map, overlayRegistryRef, reportZoom, { beforeMove: () => { viewSource = 'programmatic'; } });
+      controllerRef.current = buildController(AMap, map, overlayRegistryRef, reportZoom, {
+        beforeMove: () => { viewSource = 'programmatic'; },
+        captureScene: () => createMapSceneBlend(surfaceRef.current),
+        onScenePhase: (phase) => {
+          if (phase) shell.dataset.focusMotion = phase;
+          else delete shell.dataset.focusMotion;
+        },
+      });
 
       markReady = () => {
         if (disposed || readyNotified) return;
@@ -654,8 +763,14 @@ export default function AmapMap({
       map.on('complete', markReady);
       if (baseLayerCompleted) markReady();
       map.on('zoomend', () => { reportZoom(); reportView(); });
-      map.on('moveend', () => { callbacksRef.current.onMoveEnd?.(controllerRef.current.getCenter(), map.getZoom()); reportView(); });
-      map.on('dragstart', () => { viewSource = 'user'; });
+      map.on('moveend', () => {
+        // Per-frame scene motion is one programmatic operation. Publish only
+        // its settled view, never intermediate frames as user camera edits.
+        if (controllerRef.current.isFocusMoving()) return;
+        callbacksRef.current.onMoveEnd?.(controllerRef.current.getCenter(), map.getZoom());
+        reportView();
+      });
+      map.on('dragstart', () => { controllerRef.current?.cancelFocusMotion(); viewSource = 'user'; });
       map.on('click', (event) => {
         if (SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) return;
         if (Date.now() < suppressClickUntil || event?.originEvent?.target?.closest?.('.map-engine-handle')) return;
@@ -673,8 +788,8 @@ export default function AmapMap({
         suppressClickUntil = Date.now() + 150;
         callbacksRef.current.onPoiSelect?.({ id: poi.id || poi.poiid || '', name: poi.name || '', position: [point.lng, point.lat], nativePoi: poi });
       });
-      map.on('mousemove', (event) => { if (!SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(storagePoint(event.lnglat)); });
-      map.on('mouseout', () => { if (!SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(null); });
+      map.on('mousemove', (event) => { if (callbacksRef.current.activeTool !== 'marker' && !SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(storagePoint(event.lnglat)); });
+      map.on('mouseout', () => { if (callbacksRef.current.activeTool !== 'marker' && !SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(null); });
 
       // AMap stops emitting its map-level dblclick event when double-click zoom is
       // disabled. Listen on the native map surface so drawing can still finish
@@ -739,6 +854,7 @@ export default function AmapMap({
       };
       const cancelPress = () => { window.clearTimeout(pressTimer); pressOrigin = null; };
       const pointerDown = (event) => {
+        controllerRef.current?.cancelFocusMotion();
         shapeTap = false;
         shapePointer = SHAPE_TOOLS.includes(callbacksRef.current.activeTool) && event.isPrimary !== false && event.button === 0 && !event.target?.closest?.('.map-engine-handle, .amap-native-info-window')
           ? { x: event.clientX, y: event.clientY, id: event.pointerId, moved: false } : null;
@@ -783,7 +899,7 @@ export default function AmapMap({
         }
         if (pressOrigin && (event.pointerId !== pressOrigin.pointerId || Math.hypot(event.clientX - pressOrigin.x, event.clientY - pressOrigin.y) > 10)) cancelPress();
       };
-      const markUserMove = () => { viewSource = 'user'; cancelPress(); cancelShapeDrag(); shapePointer = null; shapeTap = false; };
+      const markUserMove = () => { controllerRef.current?.cancelFocusMotion(); viewSource = 'user'; cancelPress(); cancelShapeDrag(); shapePointer = null; shapeTap = false; };
       const pointerLeave = () => { if (!shapeDrag && SHAPE_TOOLS.includes(callbacksRef.current.activeTool)) callbacksRef.current.onMouseMove?.(null); };
       const finishPress = (event) => {
         if (shapeDrag && event.pointerId === shapeDrag.id) {
@@ -854,6 +970,7 @@ export default function AmapMap({
     return () => {
       disposed = true;
       window.clearTimeout(loadTimeout);
+      controllerRef.current?.cancelFocusMotion();
       if (viewFrame) window.cancelAnimationFrame(viewFrame);
       removeSurfaceListeners();
       resizeObserver?.disconnect();
@@ -1248,6 +1365,36 @@ export default function AmapMap({
   }, [routeSignature, ready, editable, editingFeatureId, activeTool, lang]);
 
   useEffect(() => {
+    if (!ready || activeTool !== 'marker' || !surfaceRef.current) return undefined;
+    const surface = surfaceRef.current;
+    const cursor = pinElement(markerColor, false, false, markerIcon);
+    cursor.dataset.markerCursor = 'true';
+    cursor.setAttribute('aria-hidden', 'true');
+    Object.assign(cursor.style, {
+      position: 'absolute', left: '0', top: '0', zIndex: '2000',
+      transform: 'translate(-50%, -100%)', pointerEvents: 'none', visibility: 'hidden', opacity: '.8',
+    });
+    const hide = () => { cursor.style.visibility = 'hidden'; };
+    const follow = (event) => {
+      if (event.pointerType === 'touch') { hide(); return; }
+      const bounds = surface.getBoundingClientRect();
+      cursor.style.left = `${event.clientX - bounds.left}px`;
+      cursor.style.top = `${event.clientY - bounds.top}px`;
+      cursor.style.visibility = 'visible';
+    };
+    surface.append(cursor);
+    surface.addEventListener('pointermove', follow, { capture: true, passive: true });
+    surface.addEventListener('pointerleave', hide);
+    window.addEventListener('blur', hide);
+    return () => {
+      surface.removeEventListener('pointermove', follow, true);
+      surface.removeEventListener('pointerleave', hide);
+      window.removeEventListener('blur', hide);
+      cursor.remove();
+    };
+  }, [activeTool, markerColor, markerIcon, ready]);
+
+  useEffect(() => {
     if (!ready || !mapRef.current || !amapRef.current || !shellRef.current) return;
     const map = mapRef.current;
     const AMap = amapRef.current;
@@ -1284,9 +1431,6 @@ export default function AmapMap({
     if (draftPoints.length && hoverPoint) {
       overlays.push(new AMap.CircleMarker({ center: displayPosition(hoverPoint), radius: 4, strokeColor: '#fff', strokeWeight: 1.5, fillColor: draftColor, fillOpacity: 1, zIndex: 521, bubble: true, cursor: 'crosshair' }));
     }
-    if (activeTool === 'marker' && hoverPoint) {
-      overlays.push(new AMap.Marker({ position: displayPosition(hoverPoint), anchor: 'bottom-center', content: pinElement(markerColor, false, false, markerIcon), opacity: 0.62, zIndex: 530, bubble: true, cursor: 'crosshair' }));
-    }
     if (draftMarker) {
       overlays.push(new AMap.Marker({ position: displayPosition(draftMarker.position), anchor: 'bottom-center', content: pinElement(draftMarker.color || DEFAULT_COLOR, true, false, draftMarker.icon || markerIcon), zIndex: 540, bubble: true }));
     }
@@ -1300,7 +1444,7 @@ export default function AmapMap({
     draftOverlaysRef.current = overlays;
     shellRef.current.dataset.drawTool = activeTool === 'pan' ? '' : activeTool;
     const drawing = activeTool && activeTool !== 'pan';
-    map.setDefaultCursor(drawing ? 'crosshair' : 'grab');
+    map.setDefaultCursor(activeTool === 'marker' ? 'none' : drawing ? 'crosshair' : 'grab');
     map.setStatus({ dragEnable: !['rectangle', 'circle'].includes(activeTool), doubleClickZoom: !drawing });
 
     return () => {

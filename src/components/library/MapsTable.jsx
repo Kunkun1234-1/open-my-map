@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Map as MapIcon,
   Pencil,
@@ -12,6 +12,7 @@ import LibraryDialog from './LibraryDialog.jsx';
 import MapCard from './MapCard.jsx';
 import CoverField from './CoverField.jsx';
 import { relativeDate } from './helpers.js';
+import { cardFillEvents } from './card-fill.js';
 
 export default function MapsTable({
   maps,
@@ -28,6 +29,7 @@ export default function MapsTable({
   onToast,
 }) {
   const [editing, setEditing] = useState(null);
+  const [editMode, setEditMode] = useState('dialog');
   const [deleting, setDeleting] = useState(null);
   const [form, setForm] = useState({ name: '', description: '' });
   const [coverChange, setCoverChange] = useState({ mode: 'keep' });
@@ -41,13 +43,38 @@ export default function MapsTable({
   const [latestConflict, setLatestConflict] = useState(null);
   const nameRef = useRef(null);
   const descriptionRef = useRef(null);
+  const openTimerRef = useRef(null);
+  const mutationRef = useRef(false);
+
+  const cancelPendingOpen = () => {
+    clearTimeout(openTimerRef.current);
+    openTimerRef.current = null;
+  };
+  useEffect(() => () => clearTimeout(openTimerRef.current), []);
+  useEffect(() => {
+    clearTimeout(openTimerRef.current);
+    openTimerRef.current = null;
+    if (editMode === 'inline' && editing && (view !== 'table' || !maps.some((map) => map.id === editing.id))) {
+      setEditing(null);
+      setError('');
+      setConflict(false);
+      setLatestConflict(null);
+    }
+  }, [maps, view, editMode, editing?.id]);
+  useEffect(() => {
+    if (!editing || editMode !== 'inline') return;
+    const input = focusField === 'name' ? nameRef.current : descriptionRef.current;
+    input?.focus();
+    input?.select();
+  }, [editing?.id, editMode, focusField]);
 
   const isAdmin = user?.role === 'admin';
   const canEdit = (map) =>
     isAdmin || map.my_role === 'owner' || map.my_role === 'editor';
   const canDelete = (map) => isAdmin || map.my_role === 'owner';
 
-  const openEditor = (map, field = 'name') => {
+  const openEditor = (map, field = 'name', mode = 'dialog') => {
+    cancelPendingOpen();
     if (
       trashed ||
       !canEdit(map) ||
@@ -63,10 +90,12 @@ export default function MapsTable({
     setForm({ name: map.name, description: map.description || '' });
     setCoverChange({ mode: 'keep' });
     setFocusField(field);
+    setEditMode(mode);
     setEditing({ ...map });
   };
 
   const openDeleteDialog = (map) => {
+    cancelPendingOpen();
     if (!canDelete(map) || busy || rowBusyId !== null || refreshing) return;
     setError('');
     setRefreshFailed(false);
@@ -150,16 +179,24 @@ export default function MapsTable({
 
   const submitEdit = async (event) => {
     event.preventDefault();
-    if (!editing || busy || coverChange.mode === 'invalid') return;
+    if (!editing || busy || mutationRef.current || conflict || coverChange.mode === 'invalid') return;
+    if (!form.name.trim()) {
+      setError(t('dashboard.mapNameRequired'));
+      return;
+    }
+    const inline = editMode === 'inline';
+    if (inline && form[focusField].trim() === (editing[focusField] || '').trim()) {
+      closeDialog();
+      return;
+    }
+    mutationRef.current = true;
     setBusy(true);
     setError('');
     setConflict(false);
     try {
-      const metadata = {
-        name: form.name.trim(),
-        description: form.description.trim(),
-        expectedVersion: editing.version,
-      };
+      const metadata = inline
+        ? { [focusField]: form[focusField].trim(), expectedVersion: editing.version }
+        : { name: form.name.trim(), description: form.description.trim(), expectedVersion: editing.version };
       if (coverChange.mode === 'upload') {
         await api.uploadCover('maps', editing.id, coverChange.file, metadata);
       } else if (coverChange.mode === 'reset') {
@@ -180,6 +217,7 @@ export default function MapsTable({
         setError(requestError.message);
       }
     } finally {
+      mutationRef.current = false;
       setBusy(false);
     }
   };
@@ -222,6 +260,7 @@ export default function MapsTable({
   };
 
   const toggleFavorite = async (map) => {
+    cancelPendingOpen();
     if (trashed || rowBusyId !== null) return;
     setRowBusyId(map.id);
     setError('');
@@ -237,6 +276,66 @@ export default function MapsTable({
   };
 
   const rowsLocked = busy || rowBusyId !== null || refreshing;
+
+  const activateMap = (event, map) => {
+    if (rowsLocked || trashed || editing) return;
+    cancelPendingOpen();
+    // Keyboard activation is immediate; pointer activation waits for a possible double click.
+    if (event.detail === 0 || !canEdit(map)) onOpen(map.id);
+    else if (event.detail === 1) {
+      openTimerRef.current = setTimeout(() => {
+        openTimerRef.current = null;
+        onOpen(map.id);
+      }, 550);
+    }
+  };
+
+  const renderInlineEditor = (map, field) => {
+    if (editMode !== 'inline' || editing?.id !== map.id || focusField !== field) return null;
+    const Input = field === 'name' ? 'input' : 'textarea';
+    return (
+      <form className="dashboard-inline-map-editor" onSubmit={submitEdit}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget) && !error) submitEdit(event);
+        }}>
+        <Input ref={field === 'name' ? nameRef : descriptionRef}
+          aria-label={t(field === 'name' ? 'dashboard.newMapName' : 'dashboard.mapDescription')}
+          required={field === 'name'} maxLength={field === 'name' ? 120 : 2000}
+          rows={field === 'description' ? 3 : undefined}
+          disabled={busy} value={form[field]}
+          onChange={(event) => {
+            setForm((current) => ({ ...current, [field]: event.target.value }));
+            if (!conflict) setError('');
+          }}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              closeDialog();
+            } else if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              submitEdit(event);
+            }
+          }} />
+        <small>{t(busy ? 'dashboard.projectWorking' : field === 'name' ? 'dashboard.inlineMapNameHint' : 'dashboard.inlineMapHint')}</small>
+        {error ? <div className="inline-error" role="alert">
+          <span>{error}</span>
+          {conflict && latestConflict ? <p>{t('dashboard.mapLatestValues', {
+            name: latestConflict.name, description: latestConflict.description || '—',
+          })}</p> : null}
+          {conflict ? <button type="button" className="text-button" disabled={busy} onClick={refreshEditingVersion}>
+            {t('dashboard.reloadMapVersion')}
+          </button> : null}
+        </div> : null}
+        {error ? <div className="dashboard-inline-map-actions">
+          <button type="submit" disabled={busy || conflict || !form.name.trim()}>{t('common.save')}</button>
+          <button type="button" onClick={closeDialog} disabled={busy}>{t('common.cancel')}</button>
+        </div> : null}
+      </form>
+    );
+  };
 
   return (
     <>
@@ -289,7 +388,8 @@ export default function MapsTable({
           {!trashed && onCreateMap ? (
             <button
               type="button"
-              className="dashboard-create-card"
+              className="dashboard-create-card dashboard-card-fill"
+              {...cardFillEvents}
               disabled={rowsLocked}
               onClick={onCreateMap}
             >
@@ -326,36 +426,36 @@ export default function MapsTable({
               const deletable = canDelete(map);
               return (
                 <tr key={map.id} data-testid={`map-row-${map.id}`}>
-                  <td
-                    className={editable ? 'editable' : ''}
-                    onDoubleClick={() => openEditor(map)}
-                    title={
-                      editable
-                        ? t('dashboard.doubleClickEdit')
-                        : map.name
-                    }
-                  >
-                    <span className="dashboard-project-table-name">
-                      <MapIcon size={17} />
-                      <strong>{map.name}</strong>
-                    </span>
-                  </td>
-                  <td
-                    className={
-                      editable
-                        ? 'editable dashboard-project-description'
-                        : 'dashboard-project-description'
-                    }
-                    onDoubleClick={() => openEditor(map, 'description')}
-                    title={
-                      editable
-                        ? t('dashboard.doubleClickEdit')
-                        : map.description || ''
-                    }
-                  >
-                    {map.description || (
-                      <span className="dashboard-muted">—</span>
+                  <td className={editable ? 'editable dashboard-map-name-cell' : ''}>
+                    {renderInlineEditor(map, 'name') || (
+                      trashed ? <span className="dashboard-project-table-name"><MapIcon size={17} /><strong>{map.name}</strong></span> :
+                      <button type="button" className="dashboard-project-table-name dashboard-map-name-button"
+                        disabled={rowsLocked}
+                        title={t(editable ? 'dashboard.mapNameInteraction' : 'library.openMap', { name: map.name })}
+                        onClick={(event) => activateMap(event, map)}
+                        onDoubleClick={() => openEditor(map, 'name', 'inline')}
+                        onKeyDown={(event) => {
+                          if (event.key === 'F2' && editable) {
+                            event.preventDefault();
+                            openEditor(map, 'name', 'inline');
+                          }
+                        }}>
+                        <MapIcon size={17} /><strong>{map.name}</strong>
+                      </button>
                     )}
+                  </td>
+                  <td className={editable ? 'editable dashboard-project-description' : 'dashboard-project-description'}>
+                    {renderInlineEditor(map, 'description') || (editable ?
+                      <button type="button" className="dashboard-map-description-button" disabled={rowsLocked}
+                        onDoubleClick={() => openEditor(map, 'description', 'inline')}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === 'F2') {
+                            event.preventDefault();
+                            openEditor(map, 'description', 'inline');
+                          }
+                        }} title={t('dashboard.doubleClickEdit')}>
+                        {map.description || <span className="dashboard-muted">—</span>}
+                      </button> : map.description || <span className="dashboard-muted">—</span>)}
                   </td>
                   <td>{map.project_name || '—'}</td>
                   <td>{map.layer_count || 0}</td>
@@ -365,15 +465,6 @@ export default function MapsTable({
                   </td>
                   <td>
                     <div className="dashboard-project-row-actions">
-                      {!trashed ? (
-                        <button
-                          type="button"
-                          onClick={() => onOpen(map.id)}
-                          disabled={rowsLocked}
-                        >
-                          {t('common.open')}
-                        </button>
-                      ) : null}
                       {!trashed ? (
                         <button
                           type="button"
@@ -407,7 +498,7 @@ export default function MapsTable({
                           aria-label={t('dashboard.editMapNamed', {
                             name: map.name,
                           })}
-                          onClick={() => openEditor(map)}
+                          onClick={() => openEditor(map, 'name', 'inline')}
                         >
                           <Pencil size={14} />
                         </button>
@@ -454,7 +545,7 @@ export default function MapsTable({
         </div>
       )}
 
-      {editing ? (
+      {editing && editMode === 'dialog' ? (
         <LibraryDialog
           title={t('dashboard.editMap')}
           onClose={closeDialog}

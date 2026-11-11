@@ -76,6 +76,7 @@ db.exec(`
     avatar_url TEXT NOT NULL DEFAULT '',
     avatar_stored_name TEXT,
     home_background_stored_name TEXT,
+    home_slides_json TEXT NOT NULL DEFAULT '[]',
     home_hero_titles TEXT NOT NULL DEFAULT '[]',
     wx_unionid TEXT,
     role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('admin', 'editor')),
@@ -199,6 +200,7 @@ addUserColumn('display_name', "TEXT NOT NULL DEFAULT ''");
 addUserColumn('avatar_url', "TEXT NOT NULL DEFAULT ''");
 addUserColumn('avatar_stored_name', 'TEXT');
 addUserColumn('home_background_stored_name', 'TEXT');
+addUserColumn('home_slides_json', "TEXT NOT NULL DEFAULT '[]'");
 addUserColumn('home_hero_titles', "TEXT NOT NULL DEFAULT '[]'");
 addUserColumn('wx_unionid', 'TEXT');
 addUserColumn('password_hash', 'TEXT');
@@ -281,6 +283,81 @@ const parseJson = (value, fallback = {}) => {
     return fallback;
   }
 };
+
+const LEGACY_HOME_SLIDE_IDS = ['legacy-0', 'legacy-1', 'legacy-2'];
+
+function normalizeStoredHomeSlides(row) {
+  const stored = parseJson(row?.home_slides_json, []);
+  if (Array.isArray(stored) && stored.length) {
+    const seen = new Set();
+    const slides = [];
+    for (const slide of stored) {
+      const id = typeof slide?.id === 'string' ? slide.id : '';
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      slides.push({
+        id,
+        title: typeof slide.title === 'string' ? slide.title : '',
+        backgroundStoredName:
+          typeof slide.backgroundStoredName === 'string' && slide.backgroundStoredName
+            ? slide.backgroundStoredName
+            : null,
+      });
+    }
+    if (slides.length) return slides;
+  }
+  const legacyTitles = parseJson(row?.home_hero_titles, []);
+  const legacyBackground = row?.home_background_stored_name || null;
+  return LEGACY_HOME_SLIDE_IDS.map((id, index) => ({
+    id,
+    title:
+      Array.isArray(legacyTitles) && typeof legacyTitles[index] === 'string'
+        ? legacyTitles[index]
+        : '',
+    backgroundStoredName: legacyBackground,
+  }));
+}
+
+function legacyHomeAppearance(slides) {
+  return {
+    titles: Array.from({ length: 3 }, (_, index) => slides[index]?.title || ''),
+    backgroundStoredName: slides[0]?.backgroundStoredName || null,
+  };
+}
+
+function persistHomeSlides(userId, slides, { touch = true } = {}) {
+  const legacy = legacyHomeAppearance(slides);
+  const values = [
+    JSON.stringify(slides),
+    JSON.stringify(legacy.titles),
+    legacy.backgroundStoredName,
+  ];
+  if (touch) {
+    db.prepare(`
+      UPDATE users
+      SET home_slides_json = ?, home_hero_titles = ?, home_background_stored_name = ?, last_seen = ?
+      WHERE id = ?
+    `).run(...values, iso(), userId);
+  } else {
+    db.prepare(`
+      UPDATE users
+      SET home_slides_json = ?, home_hero_titles = ?, home_background_stored_name = ?
+      WHERE id = ?
+    `).run(...values, userId);
+  }
+}
+
+// Older accounts used one image for all three fixed hero slides. Persist the
+// derived records once so their stable IDs survive future reordering.
+for (const row of db.prepare(`
+  SELECT id, home_background_stored_name, home_slides_json, home_hero_titles
+  FROM users
+`).all()) {
+  const stored = parseJson(row.home_slides_json, []);
+  if (!Array.isArray(stored) || stored.length === 0) {
+    persistHomeSlides(row.id, normalizeStoredHomeSlides(row), { touch: false });
+  }
+}
 
 // 演示账号初始密码哈希（admin123）。正式环境应由管理员自行修改。
 export function hashPassword(password) {
@@ -639,10 +716,15 @@ export function listSessionsByUser(userId) {
 
 export function publicUser(row) {
   if (!row) return null;
-  const storedHeroTitles = parseJson(row.home_hero_titles, []);
-  const homeHeroTitles = Array.from({ length: 3 }, (_, index) => (
-    Array.isArray(storedHeroTitles) && typeof storedHeroTitles[index] === 'string' ? storedHeroTitles[index] : ''
-  ));
+  const storedSlides = normalizeStoredHomeSlides(row);
+  const legacy = legacyHomeAppearance(storedSlides);
+  const homeSlides = storedSlides.map((slide) => ({
+    id: slide.id,
+    title: slide.title,
+    backgroundUrl: slide.backgroundStoredName
+      ? `/api/auth/me/home-background?slide=${encodeURIComponent(slide.id)}&v=${encodeURIComponent(slide.backgroundStoredName)}`
+      : '',
+  }));
   return {
     id: row.id,
     name: row.name,
@@ -653,13 +735,29 @@ export function publicUser(row) {
     avatarUrl: row.avatar_stored_name
       ? `/api/users/${row.id}/avatar?v=${encodeURIComponent(row.avatar_stored_name)}`
       : row.avatar_url || '',
-    homeBackgroundUrl: row.home_background_stored_name
-      ? `/api/auth/me/home-background?v=${encodeURIComponent(row.home_background_stored_name)}`
+    homeBackgroundUrl: legacy.backgroundStoredName
+      ? `/api/auth/me/home-background?v=${encodeURIComponent(legacy.backgroundStoredName)}`
       : '',
-    homeHeroTitles,
+    homeBackgroundUrls: homeSlides.map((slide) => slide.backgroundUrl),
+    homeHeroTitles: legacy.titles,
+    homeSlides,
     createdAt: row.created_at,
     lastSeen: row.last_seen,
   };
+}
+
+export function getUserHomeSlides(row) {
+  return normalizeStoredHomeSlides(row);
+}
+
+export function resolveUserHomeSlide(row, reference) {
+  const slides = normalizeStoredHomeSlides(row);
+  const exact = slides.find((slide) => slide.id === reference);
+  if (exact) return exact;
+  if (/^[0-2]$/.test(String(reference || ''))) {
+    return slides[Number(reference)] || null;
+  }
+  return null;
 }
 
 export function getUserById(userId) {
@@ -691,26 +789,91 @@ export function updateUserAvatar(userId, avatarStoredName) {
 }
 
 export function updateUserHomeBackground(userId, homeBackgroundStoredName) {
+  return updateUserHomeSlideBackground(userId, null, homeBackgroundStoredName);
+}
+
+export function updateUserHomeSlideBackground(userId, slideId, homeBackgroundStoredName) {
   const user = getUserById(userId);
   if (!user) {
     const err = new Error('用户不存在');
     err.status = 404;
     throw err;
   }
+  const previousSlides = normalizeStoredHomeSlides(user);
+  const nextSlides = previousSlides.map((slide) => ({ ...slide }));
+  if (slideId == null) {
+    for (const slide of nextSlides) slide.backgroundStoredName = homeBackgroundStoredName || null;
+  } else {
+    const slide = nextSlides.find((item) => item.id === slideId);
+    if (!slide) {
+      const err = new Error('主页轮播页不存在');
+      err.status = 404;
+      throw err;
+    }
+    slide.backgroundStoredName = homeBackgroundStoredName || null;
+  }
   db.exec('BEGIN');
   try {
-    db.prepare('UPDATE users SET home_background_stored_name = ?, last_seen = ? WHERE id = ?')
-      .run(homeBackgroundStoredName, iso(), userId);
+    persistHomeSlides(userId, nextSlides);
     const updated = publicUser(getUserById(userId));
     db.exec('COMMIT');
     return {
       user: updated,
-      previousHomeBackgroundStoredName: user.home_background_stored_name || null,
+      previousHomeBackgroundStoredName: previousSlides[0]?.backgroundStoredName || null,
+      previousHomeBackgroundStoredNames: [
+        ...new Set(previousSlides.map((slide) => slide.backgroundStoredName).filter(Boolean)),
+      ],
     };
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;
   }
+}
+
+export function updateUserHomeSlides(userId, slides) {
+  const user = getUserById(userId);
+  if (!user) {
+    const err = new Error('用户不存在');
+    err.status = 404;
+    throw err;
+  }
+  const previousSlides = normalizeStoredHomeSlides(user);
+  const previousById = new Map(previousSlides.map((slide) => [slide.id, slide]));
+  const nextSlides = slides.map((slide) => ({
+    id: slide.id,
+    title: slide.title,
+    backgroundStoredName: previousById.get(slide.id)?.backgroundStoredName || null,
+  }));
+  const nextNames = new Set(nextSlides.map((slide) => slide.backgroundStoredName).filter(Boolean));
+  const removedHomeBackgroundStoredNames = [
+    ...new Set(
+      previousSlides
+        .map((slide) => slide.backgroundStoredName)
+        .filter((name) => name && !nextNames.has(name)),
+    ),
+  ];
+  db.exec('BEGIN');
+  try {
+    persistHomeSlides(userId, nextSlides);
+    const updated = publicUser(getUserById(userId));
+    db.exec('COMMIT');
+    return { user: updated, removedHomeBackgroundStoredNames };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function isHomeBackgroundStoredNameInUse(storedName) {
+  if (!storedName) return false;
+  return db.prepare(`
+    SELECT home_background_stored_name, home_slides_json, home_hero_titles
+    FROM users
+  `).all().some((row) =>
+    normalizeStoredHomeSlides(row).some(
+      (slide) => slide.backgroundStoredName === storedName,
+    ),
+  );
 }
 
 export function updateUserHomeHeroTitles(userId, titles) {
@@ -720,17 +883,12 @@ export function updateUserHomeHeroTitles(userId, titles) {
     err.status = 404;
     throw err;
   }
-  db.exec('BEGIN');
-  try {
-    db.prepare('UPDATE users SET home_hero_titles = ?, last_seen = ? WHERE id = ?')
-      .run(JSON.stringify(titles), iso(), userId);
-    const updated = publicUser(getUserById(userId));
-    db.exec('COMMIT');
-    return updated;
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
+  const currentSlides = normalizeStoredHomeSlides(user);
+  const nextSlides = currentSlides.map((slide, index) => ({
+    id: slide.id,
+    title: index < 3 ? titles[index] || '' : slide.title,
+  }));
+  return updateUserHomeSlides(userId, nextSlides).user;
 }
 
 export function createRegisteredUser({ name, email, passwordHash }) {

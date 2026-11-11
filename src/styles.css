@@ -879,9 +879,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   padding: 0 28px 32px;
 }
 
+.admin-overview {
+  padding-top: 20px;
+}
+
 .admin-metric-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -935,9 +939,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .admin-overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.9fr);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 18px;
   align-items: start;
+}
+
+.admin-overview-grid > .admin-panel {
+  min-width: 0;
+}
+
+.admin-overview-grid table {
+  min-width: 560px;
+}
+
+.admin-overview-grid th,
+.admin-overview-grid td {
+  white-space: nowrap;
 }
 
 .admin-panel,
@@ -1025,13 +1042,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 
 .admin-activity-panel {
-  padding-bottom: 8px;
+  padding-bottom: 0;
+}
+
+.admin-activity-list {
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .admin-activity-row {
   display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 4px 10px;
   align-items: start;
   padding: 10px 16px;
   font-size: 13px;
@@ -1039,6 +1062,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .admin-activity-row + .admin-activity-row {
   border-top: 1px solid #f1f3f4;
+}
+
+.admin-activity-row > .activity-icon {
+  grid-row: 1 / span 2;
+}
+
+.admin-activity-row p {
+  min-width: 0;
+  margin: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .admin-activity-row b {
@@ -1051,6 +1085,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .admin-activity-row time {
   color: var(--admin-muted);
   font-size: 12px;
+}
+
+.admin-activity-row small {
+  display: block;
+  color: var(--admin-muted);
+  font-size: 11px;
+}
+
+.admin-activity-row time {
+  grid-column: 2;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .activity-icon {
@@ -1075,16 +1121,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 
 .admin-panel-link {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 0;
+  width: 100%;
+  padding: 12px 16px;
+  border-top: 1px solid #f1f3f4;
   font-size: 13px;
 }
 
 .admin-db-meta {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px 18px;
   margin-top: 14px;
   padding: 12px 16px;
@@ -1093,6 +1142,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   font-size: 13px;
   color: var(--admin-muted);
   box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08);
+}
+
+.admin-db-meta > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.admin-db-meta b {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-db-meta > button {
+  margin-left: auto;
 }
 
 .admin-db-meta .database-ok,
@@ -1453,12 +1521,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border: 1px solid #f1f3f4;
 }
 
+.admin-panel > footer,
 .admin-resource-table footer {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 14px;
+  border-top: 1px solid #f1f3f4;
   font-size: 12px;
+  line-height: 1.5;
   color: var(--admin-muted);
   background: #fafafa;
 }
@@ -1512,6 +1583,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .admin-metric-row,
   .admin-metric-row.compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-overview > .admin-metric-row > .admin-metric-card:last-child {
+    grid-column: 1 / -1;
   }
 
   .admin-overview-grid {

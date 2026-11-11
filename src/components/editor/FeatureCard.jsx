@@ -97,7 +97,7 @@ export default function FeatureCard({ feature, layer, canEdit, busy = false, lan
             </div>}
             <nav className="place-card-actions" aria-label={isPoint ? '地点操作' : '要素操作'}>
               {canEdit ? <>
-              {!(routeData && onRoute) ? <button type="button" disabled={busy} onClick={() => { setStyleOpen(false); onAdjust(); }} aria-label={isPoint ? text('调整位置', 'Adjust position') : text('调整形状', 'Adjust shape')} title={isPoint ? text('调整位置', 'Adjust position') : text('调整形状', 'Adjust shape')}><Move size={18} /></button> : null}
+              {!isPoint && !(routeData && onRoute) ? <button type="button" disabled={busy} onClick={() => { setStyleOpen(false); onAdjust(); }} aria-label={text('调整形状', 'Adjust shape')} title={text('调整形状', 'Adjust shape')}><Move size={18} /></button> : null}
               <button ref={styleButtonRef} type="button" disabled={busy} className={styleOpen ? 'active' : ''} onClick={() => setStyleOpen((open) => !open)} aria-label={isPoint ? '设置地点样式' : '设置要素样式'} aria-expanded={styleOpen} aria-haspopup="dialog" title="设置样式"><PaintBucket size={18} /></button>
               <button type="button" disabled={busy} onClick={() => { setStyleOpen(false); setEditing(true); }} aria-label={isPoint ? '编辑地点' : '编辑要素信息'} title="编辑信息"><Pencil size={18} /></button>
               <button type="button" disabled={busy} onClick={onMedia} aria-label="上传图片或视频" title="添加图片或视频"><Camera size={18} /></button></> : null}

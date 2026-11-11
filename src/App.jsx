@@ -7,11 +7,9 @@ import LoginPage from './components/LoginPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import { AuthProvider, useAuth } from './auth.jsx';
 import { I18nProvider, useI18n } from './i18n/index.jsx';
+import { initializeNavigation, navigate } from './navigation.js';
 
-export function navigate(path) {
-  window.history.pushState({}, '', path);
-  window.dispatchEvent(new PopStateEvent('popstate'));
-}
+export { navigate } from './navigation.js';
 
 function parseRoute(pathname) {
   const editorMatch = pathname.match(/^\/maps\/(\d+)/);
@@ -29,6 +27,8 @@ function Router() {
   const { user, loading } = useAuth();
   const { t } = useI18n();
 
+  useEffect(() => { initializeNavigation(); }, []);
+
   useEffect(() => {
     const onRoute = () => setRoute(parseRoute(window.location.pathname));
     window.addEventListener('popstate', onRoute);
@@ -38,7 +38,7 @@ function Router() {
   const isPublic = route.page === 'public' || route.page === 'login';
   useEffect(() => {
     if (!loading && !user && !isPublic) {
-      navigate('/login');
+      navigate('/login', { replace: true });
     }
   }, [loading, user, isPublic]);
 

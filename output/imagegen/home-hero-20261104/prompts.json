@@ -1,0 +1,19 @@
+{
+  "generatedWith": "built-in image_gen",
+  "date": "2026-11-04",
+  "purpose": "Open My Map homepage hero backgrounds",
+  "briefs": [
+    {
+      "name": "city-atlas",
+      "prompt": "Use case: stylized-concept. Asset type: production homepage hero BACKGROUND for Open My Map, a personal map-making web app. Generate ONE image only, a very wide panoramic 3:1 landscape, ideally 2880x960 pixels. Primary request: an elegant antique riverside city atlas drawn with extraordinarily fine graphite and sepia engraving on warm ivory paper. Main visual: a gracefully curving river, several fine bridges, compact old-city blocks and leafy gardens seen from directly overhead, with delightful intricate hand-drawn cartographic detail concentrated in the RIGHT 60 percent. LEFT 40 percent must be pale, low contrast, quiet ivory paper with only faint map traces because dark website headline and buttons will sit there. The river and streets flow naturally from left to right. Muted museum-map aesthetic, sophisticated and calm, airy editorial travel atmosphere, subtle authentic paper grain, no artificial shiny effects. Full bleed image, no panel borders. No typography, no letters, no map labels, no numbers, no UI, no pins, no logos, no watermark. Make the map itself beautiful rather than a photograph of a rolled-up paper map."
+    },
+    {
+      "name": "coastal-watercolor",
+      "prompt": "Use case: illustration-story. Asset type: production homepage hero BACKGROUND for Open My Map, a personal map-making web app. Generate ONE image only, very wide panoramic 3:1 landscape, ideally 2880x960 pixels. Primary request: an airy artistic watercolor coastal atlas, directly overhead view of an imagined East Asian harbor town with turquoise bays, small rocky islands, sandy coves, winding coastal promenades, tiny terracotta-roof buildings and olive-green parks. Expressive translucent watercolor washes with delicate pen-drawn geographic outlines and subtle ocean-depth contours; sophisticated illustrated travel journal, clearly a flat map illustration rather than a 3D diorama or a landscape photo. Detailed coast and village concentrated on the RIGHT 60 percent. LEFT 40 percent is quiet pale cream paper merging into a nearly white aqua ocean wash, with generous low-contrast negative space for dark website headline and buttons. Light and fresh, elegant subtle paper texture, warm ivory, muted sea-glass turquoise, tiny touches of coral. Full bleed, coherent single scene. No typography, no letters, no map labels, no numbers, no UI, no map pins, no logos, no watermark."
+    },
+    {
+      "name": "mountain-contours",
+      "prompt": "Use case: stylized-concept. Asset type: production homepage hero BACKGROUND for Open My Map, a personal map-making web app. Generate ONE image only, very wide panoramic 3:1 landscape, ideally 2880x960 pixels. Primary request: a refined contemporary topographic map illustration on warm off-white archival paper, an aerial cartographic world of layered sage-green mountain ridges, extremely fine flowing contour lines, a small deep-teal alpine lake, winding footpaths and subtle forest textures. Beautiful restrained scientific cartography blended with gentle cut-paper and fine-ink artistry, two-dimensional map view with delicate depth, not a photograph, not a 3D floating island. Main terrain and lake composed in the RIGHT 60 percent. The LEFT 40 percent fades naturally into pale ivory with a few very faint spacious contour lines, low contrast and calm for a dark website headline and buttons. Muted sage, moss, charcoal hairlines, blue-green lake, warm white; elegant airy editorial geography mood. Full bleed single coherent panoramic map. No text, no letters, no numbers, no map labels, no UI, no location pins, no logos, no watermark."
+    }
+  ]
+}

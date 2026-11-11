@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import CardCover from './CardCover.jsx';
 import { relativeDate } from './helpers.js';
+import { cardFillEvents } from './card-fill.js';
 
 export default function MapCard({
   map,
@@ -43,7 +44,8 @@ export default function MapCard({
   };
   return (
     <article
-      className={`dashboard-map-card${trashed ? ' is-trashed' : ''}`}
+      className={`dashboard-map-card dashboard-card-fill${trashed ? ' is-trashed' : ''}`}
+      {...cardFillEvents}
       data-testid={`map-card-${map.id}`}
     >
       <div className="dashboard-card-cover">

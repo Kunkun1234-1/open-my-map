@@ -4,16 +4,18 @@ import {
   ArrowLeft, Check, LoaderCircle, Camera, ChevronDown, ChevronRight, CircleHelp, Database, Download, Eye,
   GripVertical, Hand, Layers, Link2, List, LocateFixed, MapPin, Menu, MoreVertical,
   MousePointer2, PaintBucket, Palette, Pencil, Plus, Redo2, Route, Ruler, Search, Share2,
-  Shapes, Table2, Trash2, Undo2, Upload, Video, X, ZoomIn, ZoomOut, Maximize, Minimize, Car, Bike, Footprints, Waypoints,
+  Shapes, Table2, Trash2, Undo2, Upload, Video, X, ZoomIn, ZoomOut, Maximize, Minimize, Bike, Footprints, Waypoints,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { navigate } from '../App.jsx';
+import { goBack } from '../navigation.js';
 import { useAuth } from '../auth.jsx';
 import { LanguageSwitch, useI18n } from '../i18n/index.jsx';
 import { applyMapOp, connectMapRoom } from '../realtime.js';
 import { AMAP_CONFIGURED } from '../amap.js';
 import AmapMap, { AMAP_MAX_ZOOM, AMAP_MIN_ZOOM } from './AmapMap.jsx';
 import SharedMapViewer from './SharedMapViewer.jsx';
+import MapDescriptionInput from './editor/MapDescriptionInput.jsx';
 import StoryPresentation from './StoryPresentation.jsx';
 import { orderStoryRecords } from './shared-map-utils.js';
 import FeatureMediaGallery, {
@@ -516,7 +518,6 @@ export default function MapEditor({ mapId }) {
   const [layerMenu, setLayerMenu] = useState(null);
   const [styleTarget, setStyleTarget] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [trafficVisible, setTrafficVisible] = useState(false);
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
   const [storyDetailId, setStoryDetailId] = useState(null);
   const [toast, setToast] = useState('');
@@ -1031,7 +1032,7 @@ export default function MapEditor({ mapId }) {
     }
   };
 
-  const selectFeature = useCallback((feature, layer, edit = false, focus = true, position = null) => {
+  const selectFeature = useCallback((feature, layer, edit = false, focus = true, position = null, focusOptions) => {
     if (featureDialogRef.current && !featureDialogRef.current.id) return;
     drawingSessionRef.current += 1;
     setEditingFeatureId(null);
@@ -1043,7 +1044,7 @@ export default function MapEditor({ mapId }) {
     setActiveTool('pan');
     setDraftPoints([]);
     setHoverPoint(null);
-    if (focus) mapRef.current?.focusFeature(feature.id);
+    if (focus) mapRef.current?.focusFeature(feature.id, focusOptions);
     if (isMobile) setSheetState('half');
     if (edit && feature.style?.routeData) {
       directions.openFrom({ savedFeature: feature, layerId: layer.id, featureId: feature.id });
@@ -1420,7 +1421,7 @@ export default function MapEditor({ mapId }) {
     : activeTool === 'polygon' && draftPoints.length >= 3;
 
   if (loading) return <div className="full-loading"><span className="brand-mark"><i /><i /><i /></span><p>{t('common.loading')}</p></div>;
-  if (error || !mapData) return <div className="full-error"><CircleHelp size={38} /><h1>{t('editor.mapDeleted')}</h1><p>{error}</p><button className="primary-button" onClick={() => navigate('/')}>{t('editor.backLibrary')}</button></div>;
+  if (error || !mapData) return <div className="full-error"><CircleHelp size={38} /><h1>{t('editor.mapDeleted')}</h1><p>{error}</p><button className="primary-button" onClick={() => goBack()}>{t('editor.backLibrary')}</button></div>;
 
   const activeBaseMapKey = normalizeBaseMapKey(mapData.base_map);
   const previewMode = new URLSearchParams(window.location.search).get('preview') === '1';
@@ -1500,7 +1501,7 @@ export default function MapEditor({ mapId }) {
 
   const routeEditor = <div ref={routeEditorRef} className="route-edit-slot"><DirectionsPanel directions={directions} lang={lang} canSave={canEdit && !editorHistory.busy} embedded onClose={directions.close} /></div>;
 
-  if (previewMode) return <SharedMapViewer key={mapData.id} mapData={mapData} onSaveStoryOrder={canEdit ? (featureIds, expectedVersion) => performEdit('Story order', (expectedFingerprint) => api.saveStoryOrder(mapId, { featureIds, expectedVersion, expectedFingerprint })) : undefined} onExit={() => { window.history.replaceState({}, '', `/maps/${mapId}`); window.dispatchEvent(new PopStateEvent('popstate')); }} />;
+  if (previewMode) return <SharedMapViewer key={mapData.id} mapData={mapData} onSaveStoryOrder={canEdit ? (featureIds, expectedVersion) => performEdit('Story order', (expectedFingerprint) => api.saveStoryOrder(mapId, { featureIds, expectedVersion, expectedFingerprint })) : undefined} onExit={() => goBack(`/maps/${mapId}`)} />;
 
   return (
     <main className={`editor-page${presenting ? ' story-browsing' : ''}`}>
@@ -1511,17 +1512,16 @@ export default function MapEditor({ mapId }) {
             <div className="map-menu-anchor" data-map-menu-root>
               <button className="icon-button" onClick={() => setMoreMenu((value) => !value)} aria-label={t('editor.mapMenu')}><MoreVertical size={20} /></button>
               {moreMenu ? <div className="popup-menu map-more-menu">
-                <button onClick={() => navigate('/')}><ArrowLeft size={16} /> {t('editor.backLibrary')}</button>
+                <button onClick={() => goBack()}><ArrowLeft size={16} /> {t('editor.backLibrary')}</button>
                 <button onClick={() => navigate('/admin')}><Database size={16} /> {t('editor.dbAdmin')}</button>
                 <button onClick={() => { exportKml(mapData); setMoreMenu(false); }}><Download size={16} /> {t('editor.exportKml')}</button>
                 <button onClick={() => { exportGeoJson(mapData); setMoreMenu(false); }}><Database size={16} /> {t('editor.exportGeoJson')}</button>
-                <button aria-pressed={trafficVisible} onClick={() => { setTrafficVisible((value) => !value); setMoreMenu(false); }}><Car size={16} /> {text('实时路况', 'Traffic')}{trafficVisible ? <Check size={15} /> : null}</button>
                 <button disabled={!canEdit} onClick={saveDefaultView}><LocateFixed size={16} /> {t('editor.setDefaultView')}</button>
               </div> : null}
             </div>
           </div>
           <button className="sidebar-collapse-toggle" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? t('editor.expandPanel') : t('editor.collapsePanel')} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? t('editor.expandPanel') : t('editor.collapsePanel')}>{sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}</button>
-          <textarea readOnly={!canEdit} className="map-description-input" value={mapData.description} onChange={(event) => setMapData({ ...mapData, description: event.target.value })} onBlur={(event) => updateMap({ description: event.target.value })} aria-label={t('editor.mapDescription')} placeholder={canEdit ? text('添加地图说明', 'Add a description') : ''} rows="1" />
+          <MapDescriptionInput readOnly={!canEdit} value={mapData.description} onChange={(event) => setMapData({ ...mapData, description: event.target.value })} onBlur={(event) => updateMap({ description: event.target.value })} aria-label={t('editor.mapDescription')} placeholder={canEdit ? text('添加地图说明', 'Add a description') : ''} />
           <p className="save-status" role="status">
             <span>{text('上次编辑', 'Last edited')} {formatDate(mapData.updated_at)}</span>
             <span className="map-save-indicator" title={`${canEdit ? ((saving || editorHistory.busy) ? t('editor.saving') : t('editor.allSaved')) : t('editor.readOnly')}${realtimeStatus === 'joined' || realtimeStatus === 'connected' ? ` · ${t('editor.realtimeOn')}` : realtimeStatus === 'reconnecting' ? ` · ${t('editor.reconnecting')}` : ''}`}>
@@ -1533,7 +1533,7 @@ export default function MapEditor({ mapId }) {
         <div className="sidebar-primary-actions">
           <button onClick={addLayer} disabled={!canEdit || editorHistory.busy || Boolean(draftFeature)}><Layers size={16} /> {t('editor.addLayer')}</button>
           <button onClick={() => setShareDialog(true)}><Share2 size={16} /> {t('editor.share')}</button>
-          <button onClick={() => { window.history.pushState({}, '', `/maps/${mapId}?preview=1`); window.location.reload(); }}><Eye size={16} /> {t('editor.preview')}</button>
+          <button onClick={() => navigate(`/maps/${mapId}?preview=1`)}><Eye size={16} /> {t('editor.preview')}</button>
         </div>
         {isMobile && placeSearch.mode ? <SearchResultsPanel search={searchPanelState} onDirections={(place) => openDirections({ to: place })} onAdd={addSearchResult} onClose={placeSearch.clear} onReturnToLayers={placeSearch.clear} canAdd={Boolean(canEdit && selectedLayer)} layerName={selectedLayer?.name} compact /> : null}
         {isMobile && draftFeature ? <DraftFeatureCard key={JSON.stringify(draftFeature.geometry)} feature={draftFeature} onSave={saveFeatureDialog} onCancel={closeFeatureDialog} /> : null}
@@ -1542,7 +1542,7 @@ export default function MapEditor({ mapId }) {
           <header><Route size={17} /><b>{text('无标题路线', 'Untitled directions')}</b><button className="icon-button" onClick={directions.close} aria-label={text('关闭路线图层', 'Close directions layer')}><X size={16} /></button></header>
           {routeEditor}
         </section> : null}
-        <LayerPanel layers={mapData.layers} selectedLayerId={selectedLayerId} selectedFeatureId={selectedFeatureId} expandedLayers={expandedLayers} onToggleExpanded={(id) => setExpandedLayers((current) => ({...current,[id]:!current[id]}))} onSelectLayer={setSelectedLayerId} onSelectFeature={selectFeature} onToggleLayer={toggleLayer} onRenameLayer={renameLayer} onDeleteLayer={removeLayer} onImport={(layer) => {setSelectedLayerId(layer.id); importRef.current?.click();}} onTable={setTableLayer} onExport={exportCsv} onFeatureStyle={(feature,layer) => setStyleTarget(styleTarget?.feature?.id === feature.id ? null : {layerId:layer.id,feature})} onLayerStyle={setLayerStyleTarget} onEditFeature={(feature,layer) => setFeatureDialog({...feature,layerId:layer.id})} onReorderLayers={(layerIds) => performEdit('Reorder layers',(expectedFingerprint) => api.reorderLayers(mapId,{layerIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onReorderFeatures={(layerId,featureIds) => performEdit('Reorder features',(expectedFingerprint) => api.reorderFeatures(mapId,{layerId,featureIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onMoveFeature={(featureId,layerId,index) => performEdit('Move feature to layer',(expectedFingerprint) => {const feature=mapDataLatestRef.current.layers.flatMap((layer)=>layer.features).find((item)=>item.id===featureId);return api.moveFeature(featureId,{layerId,index,expectedFingerprint,expectedVersion:feature?.version});})} canEdit={canEdit && !editorHistory.busy && !draftFeature} peers={peers} user={user} t={t} lang={lang} renderDirections={(layer) => directions.visible && layer.id === directions.target?.layerId ? routeEditor : null} onEditDirections={(layer, feature) => openDirections({ savedFeature: feature, layerId: layer.id, featureId: feature.id })} renderFeatureStyle={(feature, layer, anchorRef) => styleTarget?.feature?.id === feature.id ? <MarkerStylePopover key={feature.id} anchorRef={anchorRef} name={feature.name} color={feature.style?.color || layer.style?.color || '#1a73e8'} icon={feature.style?.icon || layer.style?.icon} inheritIcon={!feature.style?.icon} showIcons={feature.type === 'Point'} featureType={feature.type} featureStyle={feature.style} layerStyle={layer.style} busy={editorHistory.busy} lang={lang} onSave={(style) => applyStyle(feature, style, true)} onPreview={(style) => setFeatureStylePreview((current) => style ? { featureId: feature.id, style } : current?.featureId === feature.id ? null : current)} onClose={() => setStyleTarget((current) => current?.feature?.id === feature.id ? null : current)} /> : null} />
+        <LayerPanel layers={mapData.layers} selectedLayerId={selectedLayerId} selectedFeatureId={selectedFeatureId} expandedLayers={expandedLayers} onToggleExpanded={(id) => setExpandedLayers((current) => ({...current,[id]:!current[id]}))} onSelectLayer={setSelectedLayerId} onSelectFeature={(feature, layer, edit, focus, position) => selectFeature(feature, layer, edit, focus, position, { immediate: true })} onToggleLayer={toggleLayer} onRenameLayer={renameLayer} onDeleteLayer={removeLayer} onImport={(layer) => {setSelectedLayerId(layer.id); importRef.current?.click();}} onTable={setTableLayer} onExport={exportCsv} onFeatureStyle={(feature,layer) => setStyleTarget(styleTarget?.feature?.id === feature.id ? null : {layerId:layer.id,feature})} onLayerStyle={setLayerStyleTarget} onEditFeature={(feature,layer) => setFeatureDialog({...feature,layerId:layer.id})} onReorderLayers={(layerIds) => performEdit('Reorder layers',(expectedFingerprint) => api.reorderLayers(mapId,{layerIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onReorderFeatures={(layerId,featureIds) => performEdit('Reorder features',(expectedFingerprint) => api.reorderFeatures(mapId,{layerId,featureIds,expectedFingerprint,expectedVersion:mapDataLatestRef.current.version}))} onMoveFeature={(featureId,layerId,index) => performEdit('Move feature to layer',(expectedFingerprint) => {const feature=mapDataLatestRef.current.layers.flatMap((layer)=>layer.features).find((item)=>item.id===featureId);return api.moveFeature(featureId,{layerId,index,expectedFingerprint,expectedVersion:feature?.version});})} canEdit={canEdit && !editorHistory.busy && !draftFeature} peers={peers} user={user} t={t} lang={lang} renderDirections={(layer) => directions.visible && layer.id === directions.target?.layerId ? routeEditor : null} onEditDirections={(layer, feature) => openDirections({ savedFeature: feature, layerId: layer.id, featureId: feature.id })} renderFeatureStyle={(feature, layer, anchorRef) => styleTarget?.feature?.id === feature.id ? <MarkerStylePopover key={feature.id} anchorRef={anchorRef} name={feature.name} color={feature.style?.color || layer.style?.color || '#1a73e8'} icon={feature.style?.icon || layer.style?.icon} inheritIcon={!feature.style?.icon} showIcons={feature.type === 'Point'} featureType={feature.type} featureStyle={feature.style} layerStyle={layer.style} busy={editorHistory.busy} lang={lang} onSave={(style) => applyStyle(feature, style, true)} onPreview={(style) => setFeatureStylePreview((current) => style ? { featureId: feature.id, style } : current?.featureId === feature.id ? null : current)} onClose={() => setStyleTarget((current) => current?.feature?.id === feature.id ? null : current)} /> : null} />
       </MobileSheet>
 
       <section className="map-workspace">
@@ -1570,7 +1570,6 @@ export default function MapEditor({ mapId }) {
           mapData={visibleMapData}
           editable={canEdit && !presenting && !editorHistory.busy}
           editingFeatureId={!presenting && selectedFeatureContext ? editingFeatureId : null}
-          trafficVisible={trafficVisible}
           measurementPoints={measurementPoints}
           measurementClosed={measurementClosed}
           onMeasurementChange={(points) => updateMeasurement(points)}

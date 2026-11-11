@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Clock, Copy, ExternalLink, LoaderCircle, MapPin, Phone, Plus, Route, X } from 'lucide-react';
+import { useI18n } from '../../i18n/index.jsx';
 import './search-my-maps.css';
 
 export function safePlaceUrl(url) {
@@ -39,6 +40,7 @@ function PlaceCoordinates({ position }) {
 }
 
 export default function SearchPlaceCard({ search, searchPanelState, onAdd, onDirections, onClose, canAdd = true, layerName = '', compact = true }) {
+  const { t } = useI18n();
   const state = search || searchPanelState;
   const place = state?.selectedPlace;
   if (!place) return null;
@@ -49,7 +51,7 @@ export default function SearchPlaceCard({ search, searchPanelState, onAdd, onDir
   return (
     <article className={`my-maps-place-card search-place-card${compact ? ' compact' : ''}`} aria-label="搜索地点卡片" onClickCapture={(event) => { event.nativeEvent.openMyMapCardInteraction = true; }}>
       <header className="search-place-header">
-        {state.results?.length && state.backToResults ? <button type="button" className="search-place-back" onClick={state.backToResults} aria-label="返回搜索结果" title="返回搜索结果"><ArrowLeft size={17} /></button> : null}
+        {state.results?.length && state.backToResults ? <button type="button" className="search-place-back" onClick={state.backToResults} aria-label={t('common.back')} title={t('common.back')}><ArrowLeft size={17} /></button> : null}
         <div><h2>{place.name || '选定的位置'}</h2>{category ? <p>{category}</p> : null}</div>
         <button type="button" className="search-place-close" onClick={onClose || state.clear} aria-label="关闭地点卡片"><X size={19} /></button>
       </header>

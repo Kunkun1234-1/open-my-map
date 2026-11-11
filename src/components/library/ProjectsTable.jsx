@@ -5,6 +5,7 @@ import CardCover from './CardCover.jsx';
 import LibraryDialog from './LibraryDialog.jsx';
 import CoverField from './CoverField.jsx';
 import { relativeDate } from './helpers.js';
+import { cardFillEvents } from './card-fill.js';
 
 export default function ProjectsTable({
   projects,
@@ -160,7 +161,8 @@ export default function ProjectsTable({
             return (
               <article
                 key={project.id}
-                className="dashboard-map-card dashboard-project-overview-card"
+                className="dashboard-map-card dashboard-project-overview-card dashboard-card-fill"
+                {...cardFillEvents}
                 data-testid={`project-card-${project.id}`}
               >
                 <div className="dashboard-card-cover">
@@ -260,7 +262,8 @@ export default function ProjectsTable({
           {onCreateProject ? (
             <button
               type="button"
-              className="dashboard-create-card"
+              className="dashboard-create-card dashboard-card-fill"
+              {...cardFillEvents}
               disabled={busy}
               onClick={onCreateProject}
             >

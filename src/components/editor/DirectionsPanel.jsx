@@ -47,7 +47,7 @@ export default function DirectionsPanel({ directions, canSave = true, layerName 
   return (
     <section className={`editor-directions-panel${embedded ? ' directions-embedded' : ''}`} aria-label={embedded ? text('路线图层', 'Directions layer') : text('路线规划', 'Directions')}>
       {!embedded ? <header className="directions-panel-header">
-        <button type="button" className="icon-button" onClick={onClose || directions.close} aria-label={text('关闭路线规划，返回地图', 'Close directions and return to map')}><ArrowLeft size={20} /></button>
+        <button type="button" className="icon-button" onClick={onClose || directions.close} aria-label={text('上一页', 'Previous page')}><ArrowLeft size={20} /></button>
         <h2>{text('路线', 'Directions')}</h2>
         <button type="button" className="icon-button" onClick={directions.swapStops} aria-label={text('交换起点和终点', 'Reverse the order of your stops')} title={text('交换起点和终点', 'Reverse stops')}><ArrowDownUp size={19} /></button>
       </header> : null}
