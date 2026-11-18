@@ -12,7 +12,7 @@ import {
   listVisibleMaps, listVisibleProjects, projectListItem, createProjectOwnedBy, inviteProjectMember,
   listProjectMembers, updateProjectMemberRole, removeProjectMember, transferProjectOwnership,
   updateProjectMetadata, updateProjectMetadataAndCover, deleteEmptyProject,
-  hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, setMapFavorite,
+  hashPassword, normalizeGlobalRole, canManageMap, listVisibleTrashMaps, getTrashedMapForUser, setMapFavorite,
   canAccessProject, canEditProject, canEditMap, canViewMap,
   reorderMapLayers, reorderLayerFeatures, moveMapFeature, updateMapLayerStyle,
   updateMapStoryOrder,
@@ -1000,9 +1000,8 @@ app.post('/api/maps/:mapId/trash', requireUser, (req, res) => {
     // 与现有编辑器的删除事件兼容，同时移出实时协作房间。
     emitMapOp(mapId, 'map.deleted', req.user, { entityId: mapId });
   }
-  // 管理员仍可管理非成员项目，但操作结果不能依赖其个人回收站列表。
-  res.json(listVisibleTrashMaps(req.user).find((map) => map.id === mapId)
-    || db.prepare('SELECT id, deleted_at FROM maps WHERE id = ?').get(mapId));
+  // 管理操作返回完整地图数据，不扩大管理员的个人回收站范围。
+  res.json(getTrashedMapForUser(req.user, mapId));
 });
 
 app.post('/api/maps/:mapId/restore', requireUser, (req, res) => {

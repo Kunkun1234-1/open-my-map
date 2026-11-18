@@ -293,6 +293,15 @@ test('favorites and trash preserve data while enforcing project permissions', { 
       assert.equal(trashedByAdmin.status, 200);
       assert.equal(trashedByAdmin.value.id, map.id);
       assert.ok(trashedByAdmin.value.deleted_at);
+      const ownerTrash = (await request('GET', '/api/maps/trash', owner.sessionId)).value.find((item) => item.id === map.id);
+      assert.deepEqual(Object.keys(trashedByAdmin.value).sort(), Object.keys(ownerTrash).sort());
+      assert.equal(trashedByAdmin.value.name, map.name);
+      assert.equal(trashedByAdmin.value.project_id, project.id);
+      assert.equal(trashedByAdmin.value.layer_count, 1);
+      assert.equal(trashedByAdmin.value.feature_count, 1);
+      assert.equal(trashedByAdmin.value.is_owner, false);
+      assert.equal(trashedByAdmin.value.is_favorite, false);
+      assert.equal((await request('GET', '/api/maps/trash', admin.sessionId)).value.some((item) => item.id === map.id), false);
       assert.equal((await request('DELETE', mapEndpoint, owner.sessionId)).status, 204);
       assert.equal(existsSync(storedFile), false);
       assert.equal((await request('POST', `${mapEndpoint}/restore`, owner.sessionId)).status, 404);

@@ -1270,7 +1270,12 @@ export function listVisibleTrashMaps(user) {
   return visibleMapRows(user, true);
 }
 
-function visibleMapRows(user, trashed) {
+export function getTrashedMapForUser(user, mapId) {
+  if (!canManageMap(user, mapId)) return null;
+  return visibleMapRows(user, true, mapId)[0] || null;
+}
+
+function visibleMapRows(user, trashed, mapId = null) {
   if (!user) return [];
   const rows = db.prepare(`
     SELECT m.*, p.name AS project_name, p.owner_user_id,
@@ -1282,9 +1287,9 @@ function visibleMapRows(user, trashed) {
     LEFT JOIN projects p ON p.id = m.project_id
     LEFT JOIN project_members pm ON pm.project_id = m.project_id AND pm.user_id = ?
     WHERE m.deleted_at IS ${trashed ? 'NOT ' : ''}NULL
-      AND ${trashed ? "pm.role = 'owner'" : 'pm.role IS NOT NULL'}
+      AND ${mapId !== null ? 'm.id = ?' : trashed ? "pm.role = 'owner'" : 'pm.role IS NOT NULL'}
     ORDER BY ${trashed ? 'm.deleted_at' : 'm.updated_at'} DESC, m.id DESC
-  `).all(user.id, user.id);
+  `).all(user.id, user.id, ...(mapId !== null ? [mapId] : []));
   return rows.map((map) => ({
     ...map,
     cover_url: map.cover_stored_name ? `/api/maps/${map.id}/cover?v=${encodeURIComponent(map.cover_stored_name)}` : null,
