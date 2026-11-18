@@ -1,80 +1,61 @@
 import { useMemo } from 'react';
-import { ArrowUpRight, Folder, Pencil } from 'lucide-react';
-import CardCover from './CardCover.jsx';
+import { ArrowUpRight } from 'lucide-react';
+import WorkspaceFolio from './WorkspaceFolio.jsx';
 import MapsTable from './MapsTable.jsx';
 import ProjectsTable from './ProjectsTable.jsx';
-import { relativeDate } from './helpers.js';
-import { cardFillEvents } from './card-fill.js';
-import './home-overview.css';
 
 function recentMatches(items, query) {
   return items.filter((item) => !query || `${item.name} ${item.description || ''} ${item.project_name || ''}`.toLocaleLowerCase().includes(query))
-    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || Number(b.id) - Number(a.id));
-}
-
-function PreviewCard({ entity, kind, index, onOpen, onEdit, editable, disabled, lang, t }) {
-  const project = kind === 'projects';
-  const label = t(project ? 'dashboard.openHomeProject' : 'dashboard.openHomeMap', { name: entity.name });
-  const editLabel = t(project ? 'dashboard.editProject' : 'dashboard.editMap');
-  const permissionLabel = t(project ? 'dashboard.projectOwnerOnly' : 'dashboard.mapEditPermission');
-  return (
-    <article className="dashboard-map-card dashboard-home-card dashboard-card-fill" {...cardFillEvents} data-testid={`home-${kind}-${entity.id}`}>
-      <div className="dashboard-card-cover">
-        <CardCover entity={entity} kind={kind} index={index} t={t} editable={false} onOpen={() => onOpen(entity.id)} openLabel={label} />
-      </div>
-      <div className="dashboard-card-details">
-        <button type="button" className="dashboard-map-title" onClick={() => onOpen(entity.id)} title={entity.name}>
-          <span style={project ? { viewTransitionName: `project-${entity.id}` } : undefined}>{entity.name}</span>
-        </button>
-        <p className="dashboard-card-description" title={entity.description || entity.project_name || ''}>{entity.description || entity.project_name || '—'}</p>
-        <div className="dashboard-home-card-footer">
-          <div className="dashboard-card-meta">
-            <span><Folder size={11} />{project ? t('dashboard.mapCount', { n: entity.map_count || 0 }) : entity.project_name || '—'}</span>
-            <span title={entity.updated_at}>{t('dashboard.modified', { date: relativeDate(entity.updated_at, lang) })}</span>
-          </div>
-          <div className="dashboard-project-row-actions">
-            <button type="button" className="dashboard-action-icon" disabled={!editable || disabled}
-              aria-label={t(project ? 'dashboard.editProjectNamed' : 'dashboard.editMapNamed', { name: entity.name })}
-              title={editable ? editLabel : permissionLabel}
-              onClick={onEdit}>
-              <Pencil size={14} />
-            </button>
-          </div>
-        </div>
-      </div>
-    </article>
-  );
+    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || Number(b.id) - Number(a.id))
+    .slice(0, 5);
 }
 
 export default function HomeOverview({ maps, projects, user, query, loading, lang, t, onMap, onProject, onMoreMaps, onMoreProjects, onRefresh, onToast }) {
   const recentMaps = useMemo(() => recentMatches(maps, query), [maps, query]);
   const recentProjects = useMemo(() => recentMatches(projects, query), [projects, query]);
   const groups = [
-    { kind: 'maps', items: recentMaps, title: 'dashboard.yourMaps', more: 'dashboard.moreMaps', hint: 'dashboard.homeAllMaps', empty: 'dashboard.homeEmptyMaps', onOpen: onMap, onMore: onMoreMaps },
-    { kind: 'projects', items: recentProjects, title: 'dashboard.yourProjects', more: 'dashboard.moreProjects', hint: 'dashboard.homeAllProjects', empty: 'dashboard.homeEmptyProjects', onOpen: onProject, onMore: onMoreProjects },
+    { kind: 'maps', items: recentMaps, Collection: MapsTable, onOpen: onMap, onMore: onMoreMaps, title: 'dashboard.yourMaps', empty: 'dashboard.homeEmptyMaps', more: 'dashboard.moreMaps', hint: 'dashboard.homeAllMaps' },
+    { kind: 'projects', items: recentProjects, Collection: ProjectsTable, onOpen: onProject, onMore: onMoreProjects, title: 'dashboard.yourProjects', empty: 'dashboard.homeEmptyProjects', more: 'dashboard.moreProjects', hint: 'dashboard.homeAllProjects' },
   ];
+
   return (
-    <div className="dashboard-home-overview">
-      {groups.map((group) => {
-        const Collection = group.kind === 'maps' ? MapsTable : ProjectsTable;
-        const items = group.items.slice(0, 5);
-        const collectionProps = group.kind === 'maps' ? { maps: items } : { projects: items };
+    <div className="workspace-overview">
+      {groups.map(({ kind, items, Collection, onOpen, onMore, title, empty, more, hint }) => {
+        const headingId = `home-${kind}-heading`;
         return (
-        <section key={group.kind} className="dashboard-home-section" aria-labelledby={`home-${group.kind}-heading`} aria-busy={loading}>
-          <h2 id={`home-${group.kind}-heading`}>{t(group.title)}</h2>
-          {loading ? <div className="dashboard-table-loading" aria-label={t('common.loading')}>{[0, 1, 2].map((n) => <div key={n} />)}</div> : <>
-            {group.items.length === 0 ? <p className="dashboard-home-empty">{t(group.empty)}</p> : null}
-            <Collection {...collectionProps} user={user} lang={lang} t={t} view="overview" onOpen={group.onOpen} onRefresh={onRefresh} onToast={onToast}
-              renderOverview={({ onEdit, canEdit, disabled }) => <div className="dashboard-home-grid">
-              {items.map((entity, index) => <PreviewCard key={entity.id} entity={entity} kind={group.kind} index={index} lang={lang} t={t} onOpen={group.onOpen} onEdit={() => onEdit(entity)} editable={canEdit(entity)} disabled={disabled} />)}
-              <button type="button" className="dashboard-home-more dashboard-card-fill" {...cardFillEvents} onClick={group.onMore}>
-                <span className="dashboard-home-more-icon"><ArrowUpRight size={25} strokeWidth={1.4} /></span>
-                <strong>{t(group.more)}</strong>
-                <small>{t(group.hint)}</small>
-              </button>
-            </div>} />
-          </>}
-        </section>
+          <section key={kind} aria-labelledby={headingId} aria-busy={loading}>
+            <div className="workspace-section-heading">
+              <h2 id={headingId}>{t(title)}</h2>
+            </div>
+            {loading ? <p className="workspace-section-message" role="status">{t('common.loading')}</p> : (
+              <>
+                {!items.length ? <p className="workspace-section-message">{t(query ? 'library.noMatchTitle' : empty)}</p> : null}
+                <Collection {...{ [kind]: items }} user={user} lang={lang} t={t} view="overview"
+                  onOpen={onOpen} onRefresh={onRefresh} onToast={onToast}
+                  renderOverview={({ onEdit, canEdit, disabled, onFavorite, onDelete, canDelete }) => (
+                    <div className="workspace-folio-grid">
+                      {items.map((entity, index) => (
+                        <WorkspaceFolio key={entity.id} testId={`home-${kind}-${entity.id}`} entity={entity} kind={kind} index={index} lang={lang} t={t}
+                          onOpen={onOpen} onEdit={() => onEdit(entity)} editable={canEdit(entity)} disabled={disabled}
+                          onFavorite={onFavorite && (() => onFavorite(entity))}
+                          onDelete={onDelete && (() => onDelete(entity))} deletable={canDelete?.(entity)} />
+                      ))}
+                      <button type="button" className="workspace-more-folio" onClick={onMore}>
+                        <span className="workspace-folio-image workspace-more-art" aria-hidden="true">
+                          <img src={lang === 'en' ? '/images/map-talk-logo-en.svg' : '/images/map-talk-logo-zh.svg'} alt="" width="1706" height="481" />
+                        </span>
+                        <span className="workspace-folio-title">
+                          <span>{t(more)}</span>
+                          <ArrowUpRight size={18} strokeWidth={1.4} aria-hidden="true" />
+                        </span>
+                        <span className="workspace-folio-note">{t(hint)}</span>
+                      </button>
+                    </div>
+                  )}
+                />
+              </>
+            )}
+          </section>
         );
       })}
     </div>

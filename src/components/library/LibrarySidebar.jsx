@@ -3,20 +3,12 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
-  Compass,
-  Globe,
-  Home,
-  Map,
-  Plus,
   Shield,
-  Users,
   X,
 } from 'lucide-react';
 import { navigate } from '../../App.jsx';
 import { LanguageSwitch } from '../../i18n/index.jsx';
 import './sidebar-groups.css';
-
-const spaceIcons = [Users, Compass, Globe, Map, Compass];
 
 function storageKey(userId) {
   return `open-my-map-sidebar-groups:${userId || 'anonymous'}`;
@@ -49,9 +41,9 @@ export default function LibrarySidebar({
   animateProjectSelection = false,
   onNavigate,
   onProject,
-  onCreateProject,
   open,
   onClose,
+  lang,
   t,
 }) {
   const [mobile, setMobile] = useState(
@@ -102,6 +94,8 @@ export default function LibrarySidebar({
     );
   }, [selectedProjectId]);
   const name = user?.displayName || user?.name || t('library.account');
+  const logoLocale = lang === 'en' ? 'en' : 'zh';
+  const appName = logoLocale === 'en' ? 'Map Talk' : t('common.appName');
   const toggleProjects = () => {
     const willCollapse = projectsExpanded;
     setManuallyCollapsedProjectId(
@@ -142,29 +136,12 @@ export default function LibrarySidebar({
       >
         <div className="dashboard-brand-row">
           <button
+            type="button"
             className="dashboard-brand"
             onClick={() => onNavigate('home')}
-            aria-label={t('library.homeAria')}
+            aria-label={t('library.homeAria', { name: appName })}
           >
-            <svg
-              width="23"
-              height="25"
-              viewBox="0 0 23 25"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="m2 5 6-3 7 2 6-2v18l-6 3-7-2-6 2V5Z"
-                fill="currentColor"
-              />
-              <path
-                d="M8 7v10M15 8v10"
-                stroke="white"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span>Open My Map</span>
+            <img className="dashboard-brand-mark" src={`/images/map-talk-logo-${logoLocale}.svg`} width="1706" height="481" alt="" />
           </button>
           <button
             ref={closeRef}
@@ -175,13 +152,8 @@ export default function LibrarySidebar({
             <X size={19} />
           </button>
         </div>
-        <nav className="dashboard-main-nav sidebar-groups" aria-label={t('library.menu')}>
+        <nav className="dashboard-main-nav" aria-label={t('library.menu')}>
           <button
-            className={
-              section === 'home' && selectedProjectId === 'all'
-                ? 'active'
-                : ''
-            }
             onClick={() => onNavigate('home')}
             aria-current={
               section === 'home' && selectedProjectId === 'all'
@@ -189,17 +161,10 @@ export default function LibrarySidebar({
                 : undefined
             }
           >
-            <Home size={17} strokeWidth={1.7} />
             <span>{t('dashboard.home')}</span>
           </button>
 
           <button
-            className={
-              ['maps', 'shared', 'favorites', 'trash'].includes(section) &&
-              selectedProjectId === 'all'
-                ? 'active'
-                : ''
-            }
             onClick={() => onNavigate('maps')}
             aria-current={
               ['maps', 'shared', 'favorites', 'trash'].includes(section) &&
@@ -208,21 +173,16 @@ export default function LibrarySidebar({
                 : undefined
             }
           >
-            <Map size={17} strokeWidth={1.7} />
             <span>{t('dashboard.maps')}</span>
           </button>
 
-          <section className="sidebar-nav-group sidebar-project-group">
-            <div className="sidebar-nav-group-heading">
+          <div className="sidebar-nav-group-heading">
               <button
                 type="button"
-                className={`sidebar-nav-group-link${
-                  section === 'projects' ? ' active' : ''
-                }`}
+                className="sidebar-nav-group-link"
                 onClick={() => onNavigate('projects')}
                 aria-current={section === 'projects' ? 'page' : undefined}
               >
-                <Compass size={17} strokeWidth={1.7} />
                 <span>{t('dashboard.projects')}</span>
               </button>
               <button
@@ -243,35 +203,28 @@ export default function LibrarySidebar({
                   <ChevronRight size={14} />
                 )}
               </button>
-            </div>
-            {projectsExpanded ? (
-              <div id="sidebar-project-children" className="sidebar-nav-children sidebar-project-children">
-                {projects.map((project, index) => {
-                  const Icon = spaceIcons[index % spaceIcons.length];
-                  return (
-                    <button
-                      key={project.id}
-                      className={selectedProjectId === project.id ? 'active' : ''}
-                      style={{ viewTransitionName: animateProjectSelection && selectedProjectId === project.id ? 'project-selection' : undefined }}
-                      onClick={() => chooseProject(project.id)}
-                      aria-current={selectedProjectId === project.id ? 'page' : undefined}
-                      data-testid={`project-filter-${project.id}`}
-                      title={project.name}
-                    >
-                      <span className={`space-icon space-color-${index % 5}`}>
-                        <Icon size={14} strokeWidth={1.8} />
-                      </span>
-                      <span style={{ viewTransitionName: !animateProjectSelection && section === 'maps' && selectedProjectId === project.id ? `project-${project.id}` : undefined }}>{project.name}</span>
-                    </button>
-                  );
-                })}
-                <button onClick={onCreateProject} className="dashboard-new-space">
-                  <Plus size={16} />
-                  <span>{t('library.createProject')}</span>
-                </button>
+          </div>
+          {projectsExpanded ? (
+              <div id="sidebar-project-children" className="sidebar-project-children">
+                {projects.map((project, index) => (
+                  <button
+                    key={project.id}
+                    style={{ viewTransitionName: animateProjectSelection && selectedProjectId === project.id ? 'project-selection' : undefined }}
+                    onClick={() => chooseProject(project.id)}
+                    aria-current={selectedProjectId === project.id ? 'page' : undefined}
+                    data-testid={`project-filter-${project.id}`}
+                    title={project.name}
+                  >
+                    <span className="sidebar-project-number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+                    <span style={{ viewTransitionName: !animateProjectSelection && section === 'maps' && selectedProjectId === project.id ? `project-${project.id}` : undefined }}>{project.name}</span>
+                  </button>
+                ))}
               </div>
-            ) : null}
-          </section>
+          ) : null}
+          <button type="button" onClick={() => onNavigate('about')}
+            aria-current={section === 'about' ? 'page' : undefined}>
+            <span>{t('dashboard.about')}</span>
+          </button>
         </nav>
         <div className="dashboard-sidebar-bottom">
           <div className="dashboard-sidebar-utilities">

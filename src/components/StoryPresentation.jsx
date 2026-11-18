@@ -11,7 +11,7 @@ function ignoresStoryKeys(target) {
     || Boolean(target.closest('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], [role="slider"], video, audio, a, button'));
 }
 
-export default function StoryPresentation({ records = [], selectedId, showDetails = false, onCloseDetails, onOpenDetails, onSelect, onLocate, placement = 'overlay', text }) {
+export default function StoryPresentation({ records = [], selectedId, showDetails = false, onCloseDetails, onOpenDetails, onSelect, placement = 'overlay', text }) {
   const reopenRef = useRef(null);
   const closeRef = useRef(null);
   const currentIndex = useMemo(() => {
@@ -60,12 +60,11 @@ export default function StoryPresentation({ records = [], selectedId, showDetail
           <span>{layer.name}</span>
           <h2>{feature.name}</h2>
         </div>
-        <button ref={closeRef} type="button" onClick={() => { onCloseDetails?.(); requestAnimationFrame(() => reopenRef.current?.focus()); }} aria-label={text('隐藏详情', 'Hide details')} title={text('隐藏详情', 'Hide details')}><X size={18} /></button>
+        <button ref={closeRef} type="button" onClick={() => { onCloseDetails?.(); requestAnimationFrame(() => reopenRef.current?.focus()); }} aria-label={rail ? text('关闭详情', 'Close details') : text('隐藏详情', 'Hide details')} title={rail ? text('关闭详情', 'Close details') : text('隐藏详情', 'Hide details')}><X size={18} /></button>
       </header>
       {rail ? <FeatureMediaGallery attachments={feature.attachments} featureName={feature.name} /> : null}
       {feature.description ? <p>{feature.description}</p> : null}
       {!rail ? <FeatureMediaGallery attachments={feature.attachments} featureName={feature.name} compact /> : null}
-      {rail && onLocate ? <button type="button" className="story-locate" onClick={onLocate}><MapPin size={15} />{text('在地图上定位', 'Show on map')}</button> : null}
       {rail ? navigation : null}
     </article> : null}
 

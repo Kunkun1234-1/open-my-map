@@ -1,0 +1,23 @@
+// The order is stable so an existing map or project's default cover stays consistent.
+export const DEFAULT_COVER_URLS = Object.freeze([
+  '/images/workspace/shenzhen-bay.webp',
+  '/images/workspace/suzhou-shantang.webp',
+  '/images/workspace/qingdao-old-town.webp',
+  '/images/workspace/nanjing-qixia.webp',
+  '/images/cover-shenzhen.webp',
+  '/images/cover-island.webp',
+  '/images/cover-lake.webp',
+  '/images/cover-shanghai.webp',
+  '/images/default-covers/desert-road.webp',
+  '/images/default-covers/misty-forest.webp',
+  '/images/default-covers/snow-village.webp',
+  '/images/default-covers/chengdu-teahouse.webp',
+  '/images/default-covers/chengdu-night-market.webp',
+  '/images/default-covers/museum-concrete.webp',
+  '/images/default-covers/rainy-bicycles.webp',
+  '/images/default-covers/coastal-cliffs.webp',
+  '/images/default-covers/botanical-house.webp',
+  '/images/default-covers/rice-terraces.webp',
+  '/images/default-covers/train-window.webp',
+  '/images/default-covers/dawn-balloons.webp',
+]);

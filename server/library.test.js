@@ -135,6 +135,43 @@ test('favorites and trash preserve data while enforcing project permissions', { 
     });
     const map = (await request('POST', '/api/maps', owner.sessionId, { projectId: project.id, name: 'Restore me' })).value;
     const mapEndpoint = `/api/maps/${map.id}`;
+    await t.test('admin workspace lists only owned or joined projects while management lists all data', async () => {
+      const adminMaps = async () => (await request('GET', '/api/maps', admin.sessionId)).value;
+      const adminProjects = async () => (await request('GET', '/api/projects', admin.sessionId)).value;
+      assert.equal((await adminMaps()).some((item) => item.id === map.id), false);
+      assert.equal((await adminProjects()).some((item) => item.id === project.id), false);
+      assert.equal((await request('GET', '/api/admin/maps', admin.sessionId)).value.some((item) => item.id === map.id), true);
+      assert.equal((await request('GET', '/api/admin/projects', admin.sessionId)).value.some((item) => item.id === project.id), true);
+      assert.equal((await request('GET', '/api/admin/maps', owner.sessionId)).status, 403);
+      assert.equal((await request('GET', mapEndpoint, admin.sessionId)).status, 200);
+
+      // Explicit collaboration is shown with its actual project role, not global admin ownership.
+      assert.equal((await request('POST', `/api/projects/${project.id}/members`, owner.sessionId, {
+        email: admin.user.email, role: 'editor',
+      })).status, 201);
+      const joinedMap = (await adminMaps()).find((item) => item.id === map.id);
+      assert.equal(joinedMap.my_role, 'editor');
+      assert.equal(joinedMap.is_owner, false);
+      assert.equal((await adminProjects()).find((item) => item.id === project.id).my_role, 'editor');
+      assert.equal((await request('DELETE', `/api/projects/${project.id}/members/${admin.user.id}`, owner.sessionId)).status, 204);
+      assert.equal((await adminMaps()).some((item) => item.id === map.id), false);
+      assert.equal((await adminProjects()).some((item) => item.id === project.id), false);
+
+      const ownProject = (await request('POST', '/api/projects', admin.sessionId, { name: 'Admin personal project' })).value;
+      const ownMap = (await request('POST', '/api/maps', admin.sessionId, { projectId: ownProject.id, name: 'Admin personal map' })).value;
+      assert.equal((await adminProjects()).find((item) => item.id === ownProject.id).my_role, 'owner');
+      assert.equal((await adminMaps()).find((item) => item.id === ownMap.id).is_owner, true);
+      assert.equal((await request('GET', '/api/maps', outsider.sessionId)).value.some((item) => item.id === ownMap.id), false);
+      const trashed = await request('POST', `/api/maps/${ownMap.id}/trash`, admin.sessionId);
+      assert.equal(trashed.status, 200);
+      assert.ok(trashed.value.deleted_at);
+      assert.equal((await request('GET', '/api/maps/trash', admin.sessionId)).value.some((item) => item.id === ownMap.id), true);
+      assert.equal((await request('DELETE', `/api/maps/${ownMap.id}`, admin.sessionId)).status, 204);
+      assert.equal((await request('DELETE', `/api/projects/${ownProject.id}`, admin.sessionId)).status, 204);
+
+      // A no-op cover reset still returns a result for an admin outside this project.
+      assert.equal((await request('DELETE', `/api/projects/${project.id}/cover`, admin.sessionId)).value.id, project.id);
+    });
     const layer = map.layers[0];
     const withFeature = (await request('POST', `/api/layers/${layer.id}/features`, owner.sessionId, {
       name: 'A place', geometry: { type: 'Point', coordinates: [121.47, 31.23] },
@@ -161,7 +198,7 @@ test('favorites and trash preserve data while enforcing project permissions', { 
       assert.equal((await request('PATCH', `${mapEndpoint}/favorite`, editor.sessionId, { favorite: true })).status, 200);
       assert.equal((await request('PATCH', `${mapEndpoint}/favorite`, viewer.sessionId, { favorite: true })).status, 200);
       assert.equal((await request('PATCH', `${mapEndpoint}/favorite`, editor.sessionId, { favorite: false })).status, 200);
-      for (const account of [{ user: owner, favorite: true }, { user: editor, favorite: false }, { user: viewer, favorite: true }, { user: admin, favorite: false }]) {
+      for (const account of [{ user: owner, favorite: true }, { user: editor, favorite: false }, { user: viewer, favorite: true }]) {
         const maps = (await request('GET', '/api/maps', account.user.sessionId)).value;
         assert.equal(maps.find((item) => item.id === map.id).is_favorite, account.favorite);
       }
@@ -192,13 +229,14 @@ test('favorites and trash preserve data while enforcing project permissions', { 
         assert.equal((await request('GET', '/api/maps', account.sessionId)).value.some((item) => item.id === map.id), false);
         assert.equal((await request('GET', mapEndpoint, account.sessionId)).status, 404);
       }
-      for (const account of [owner, admin]) {
+      for (const account of [owner]) {
         assert.equal((await request('GET', '/api/maps/trash', account.sessionId)).value.some((item) => item.id === map.id), true);
       }
       for (const account of [editor, viewer, outsider]) {
         assert.deepEqual((await request('GET', '/api/maps/trash', account.sessionId)).value, []);
         assert.equal((await request('POST', `${mapEndpoint}/restore`, account.sessionId)).status, 403);
       }
+      assert.equal((await request('GET', '/api/maps/trash', admin.sessionId)).value.some((item) => item.id === map.id), false);
       assert.equal((await request('GET', `/api/public/${share.token}`)).status, 404);
       assert.equal((await fetch(`${server.url}${attachment.url}`)).status, 404);
       const encodedMediaUrl = attachment.url.replace('.', '%2E');
@@ -251,7 +289,10 @@ test('favorites and trash preserve data while enforcing project permissions', { 
     await t.test('permanent deletion remains compatible and removes preserved media', async () => {
       await request('POST', `${mapEndpoint}/trash`, owner.sessionId);
       assert.equal((await request('POST', `${mapEndpoint}/restore`, admin.sessionId)).status, 200);
-      await request('POST', `${mapEndpoint}/trash`, admin.sessionId);
+      const trashedByAdmin = await request('POST', `${mapEndpoint}/trash`, admin.sessionId);
+      assert.equal(trashedByAdmin.status, 200);
+      assert.equal(trashedByAdmin.value.id, map.id);
+      assert.ok(trashedByAdmin.value.deleted_at);
       assert.equal((await request('DELETE', mapEndpoint, owner.sessionId)).status, 204);
       assert.equal(existsSync(storedFile), false);
       assert.equal((await request('POST', `${mapEndpoint}/restore`, owner.sessionId)).status, 404);

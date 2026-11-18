@@ -1,7 +1,7 @@
 import UserAvatar from './UserAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, Check, LoaderCircle, Camera, ChevronDown, ChevronRight, CircleHelp, Database, Download, Eye,
+  Check, LoaderCircle, Camera, ChevronDown, ChevronRight, CircleHelp, Download, Eye,
   GripVertical, Hand, Layers, Link2, List, LocateFixed, MapPin, Menu, MoreVertical,
   MousePointer2, PaintBucket, Palette, Pencil, Plus, Redo2, Route, Ruler, Search, Share2,
   Shapes, Table2, Trash2, Undo2, Upload, Video, X, ZoomIn, ZoomOut, Maximize, Minimize, Bike, Footprints, Waypoints,
@@ -204,9 +204,28 @@ function ShareDialog({ map, share, onGenerate, onClose }) {
   return (
     <Modal title={t('editor.shareMap')} onClose={onClose}>
       <div className="share-dialog-body">
-        <div className="share-map-row"><span className="share-map-icon"><Layers size={22} /></span><div><b>{map.name}</b><p>{map.visibility === 'private' ? t('editor.limitedMap') : t('editor.linkAnyone')}</p></div></div>
-        <div className="share-access-row"><div><b>{t('editor.regularAccess')}</b><p>{t('editor.shareReadonly')}</p></div><button className="secondary-button" onClick={onGenerate}>{share ? t('editor.reuseShareLink') : t('editor.createShareLink')}</button></div>
-        {link ? <div className="copy-link-row"><input readOnly value={link} aria-label={t('editor.shareLink')} /><button className="primary-button" onClick={() => navigator.clipboard.writeText(link)}>{t('editor.copyLink')}</button></div> : null}
+        <div className="share-map-row">
+          <span className="share-map-icon"><Layers size={22} aria-hidden="true" /></span>
+          <div>
+            <b>{map.name}</b>
+            <p>{!share && map.visibility === 'private' ? t('editor.limitedMap') : t('editor.linkAnyone')}</p>
+          </div>
+        </div>
+        <div className="share-access-row">
+          <b>{t('editor.readOnlyMap')}</b>
+          <p>{t('editor.shareReadonly')}</p>
+        </div>
+        {link ? <input className="share-link-input" readOnly value={link} aria-label={t('editor.shareLink')} /> : null}
+        <div className="share-link-actions">
+          <button type="button" className="secondary-button" onClick={onGenerate}>
+            {share ? t('editor.reuseShareLink') : t('editor.createShareLink')}
+          </button>
+          {link ? (
+            <button type="button" className="secondary-button" onClick={() => navigator.clipboard.writeText(link)}>
+              {t('editor.copyLink')}
+            </button>
+          ) : null}
+        </div>
       </div>
     </Modal>
   );
@@ -600,7 +619,8 @@ export default function MapEditor({ mapId }) {
   });
   const placeSearch = usePlaceSearch({
     getBounds: () => mapRef.current?.getBounds(),
-    onLocate: (place) => { if (place.position) mapRef.current?.setView(place.position, 16); },
+    // Settle the destination before InfoWindow autoMove measures the popup.
+    onLocate: (place) => { if (place.position) mapRef.current?.setView(place.position, 16, { immediate: true }); },
     toast: setToast,
   });
   useEffect(() => {
@@ -1434,7 +1454,7 @@ export default function MapEditor({ mapId }) {
       layer={selectedFeatureContext.layer}
       lang={lang}
       canEdit={canEdit}
-      busy={editorHistory.busy}
+      busy={saving || editorHistory.busy}
       onClose={() => setSelectedFeatureId(null)}
       onCopyCoordinates={() => copyFeatureCoordinates(selectedFeatureContext.feature)}
       onStyle={(color) => applyCardStyle(selectedFeatureContext.feature, color)}
@@ -1444,6 +1464,7 @@ export default function MapEditor({ mapId }) {
       }}
       onSave={(changes) => saveCardDetails(selectedFeatureContext.feature, changes)}
       onMedia={() => requestQuickMedia(selectedFeatureContext.feature)}
+      onDeleteAttachment={deleteFeatureAttachment}
       onAdjust={() => setEditingFeatureId(selectedFeatureId)}
       onRoute={() => selectedFeatureContext.feature.style?.routeData
         ? openDirections({ savedFeature: selectedFeatureContext.feature, layerId: selectedFeatureContext.layer.id, featureId: selectedFeatureId })
@@ -1512,10 +1533,8 @@ export default function MapEditor({ mapId }) {
             <div className="map-menu-anchor" data-map-menu-root>
               <button className="icon-button" onClick={() => setMoreMenu((value) => !value)} aria-label={t('editor.mapMenu')}><MoreVertical size={20} /></button>
               {moreMenu ? <div className="popup-menu map-more-menu">
-                <button onClick={() => goBack()}><ArrowLeft size={16} /> {t('editor.backLibrary')}</button>
-                <button onClick={() => navigate('/admin')}><Database size={16} /> {t('editor.dbAdmin')}</button>
                 <button onClick={() => { exportKml(mapData); setMoreMenu(false); }}><Download size={16} /> {t('editor.exportKml')}</button>
-                <button onClick={() => { exportGeoJson(mapData); setMoreMenu(false); }}><Database size={16} /> {t('editor.exportGeoJson')}</button>
+                <button onClick={() => { exportGeoJson(mapData); setMoreMenu(false); }}><Download size={16} /> {t('editor.exportGeoJson')}</button>
                 <button disabled={!canEdit} onClick={saveDefaultView}><LocateFixed size={16} /> {t('editor.setDefaultView')}</button>
               </div> : null}
             </div>

@@ -1,15 +1,19 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowDownUp, Check, ChevronDown } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown } from 'lucide-react';
 
 const SORT_OPTIONS = [
-  ['modified', 'dashboard.lastModified'],
-  ['oldest', 'dashboard.oldestFirst'],
+  ['modified', 'dashboard.sortByModified'],
+  ['created', 'dashboard.sortByCreated'],
   ['name', 'dashboard.nameAZ'],
 ];
 
 export default function LibrarySortMenu({ value, onChange, t }) {
   const [open, setOpen] = useState(false);
-  const selectedIndex = Math.max(0, SORT_OPTIONS.findIndex(([key]) => key === value));
+  const selectedIndex = Math.max(0, SORT_OPTIONS.findIndex(([key]) => key === value.field));
+  const ascending = value.direction === 'asc';
+  const DirectionIcon = ascending ? ArrowUp : ArrowDown;
+  const directionLabel = t(ascending ? 'dashboard.sortOldToNew' : 'dashboard.sortNewToOld');
+  const selectedLabel = t(value.field === 'name' && !ascending ? 'dashboard.nameZA' : SORT_OPTIONS[selectedIndex][1]);
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
@@ -93,15 +97,15 @@ export default function LibrarySortMenu({ value, onChange, t }) {
         ref={triggerRef}
         type="button"
         className={open ? 'dashboard-sort-trigger is-open' : 'dashboard-sort-trigger'}
-        aria-label={t('library.sort')}
+        aria-label={`${t('library.sort')} · ${selectedLabel}${value.field === 'name' ? '' : ` · ${directionLabel}`}`}
         aria-haspopup="menu"
         aria-controls={menuId}
         aria-expanded={open}
         onClick={() => open ? close() : openMenu()}
         onKeyDown={handleTriggerKeyDown}
       >
-        <ArrowDownUp size={14} aria-hidden="true" />
-        <span>{t(SORT_OPTIONS[selectedIndex][1])}</span>
+        <DirectionIcon size={14} aria-hidden="true" />
+        <span>{selectedLabel}</span>
         <ChevronDown size={13} aria-hidden="true" />
       </button>
       {open ? (
@@ -118,12 +122,12 @@ export default function LibrarySortMenu({ value, onChange, t }) {
               ref={(element) => { optionRefs.current[index] = element; }}
               type="button"
               role="menuitemradio"
-              aria-checked={value === key}
-              className={value === key ? 'is-selected' : ''}
+              aria-checked={value.field === key}
+              className={value.field === key ? 'is-selected' : ''}
               onClick={() => choose(index)}
             >
-              <span>{t(labelKey)}</span>
-              {value === key ? <Check size={15} aria-hidden="true" /> : null}
+              <span>{value.field === key ? selectedLabel : t(labelKey)}</span>
+              {value.field === key ? <DirectionIcon size={15} aria-hidden="true" /> : null}
             </button>
           ))}
         </div>

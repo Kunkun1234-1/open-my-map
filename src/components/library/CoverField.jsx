@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Image } from 'lucide-react';
-import { api } from '../../api.js';
-import { coverStyle } from './helpers.js';
-import MapCardPreview from './MapCardPreview.jsx';
+import useLibraryCover from './useLibraryCover.js';
 import './asset-feedback.css';
 
 const MAX_COVER_SIZE = 10 * 1024 * 1024;
@@ -23,39 +21,10 @@ export default function CoverField({
   t,
   disabled,
 }) {
-  const [loadedCoverUrl, setLoadedCoverUrl] = useState('');
-  const [coverLoadError, setCoverLoadError] = useState(false);
-  const [coverRequestVersion, setCoverRequestVersion] = useState(0);
   const [previewUrl, setPreviewUrl] = useState('');
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
-
-  useEffect(() => {
-    let active = true;
-    let objectUrl = '';
-    setLoadedCoverUrl('');
-    setCoverLoadError(false);
-    if (!entity.cover_url) return undefined;
-
-    api
-      .fetchCover(entity.cover_url)
-      .then((blob) => {
-        objectUrl = URL.createObjectURL(blob);
-        if (active) setLoadedCoverUrl(objectUrl);
-        else URL.revokeObjectURL(objectUrl);
-      })
-      .catch(() => {
-        if (active) {
-          setLoadedCoverUrl('');
-          setCoverLoadError(true);
-        }
-      });
-
-    return () => {
-      active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [coverRequestVersion, entity.cover_url, entity.id]);
+  const cover = useLibraryCover(entity, kind, { useDefault: value.mode === 'reset' });
 
   useEffect(() => {
     let objectUrl = '';
@@ -70,18 +39,7 @@ export default function CoverField({
     };
   }, [value.file, value.mode]);
 
-  const defaultStyle = coverStyle(entity);
-  const showMapPreview = kind === 'maps' && Number(entity.feature_count) > 0
-    && value.mode !== 'upload' && (value.mode === 'reset' || !entity.cover_url);
-  const existingStyle = loadedCoverUrl
-    ? { ...defaultStyle, backgroundImage: `url("${loadedCoverUrl}")` }
-    : defaultStyle;
-  const previewStyle =
-    value.mode === 'reset'
-      ? defaultStyle
-      : previewUrl
-        ? { ...defaultStyle, backgroundImage: `url("${previewUrl}")` }
-        : existingStyle;
+  const displayedUrl = (value.mode === 'upload' && previewUrl) || cover.url;
 
   const selectFile = (event) => {
     const file = event.target.files?.[0];
@@ -114,20 +72,18 @@ export default function CoverField({
           {error}
         </div>
       ) : null}
-      <div
+      <img
         className="dashboard-cover-preview"
-        style={previewStyle}
-        role="img"
-        aria-label={t('dashboard.coverPreview')}
-      >
-        {showMapPreview ? <MapCardPreview key={`${entity.id}:${entity.version}`} mapId={entity.id} t={t} /> : null}
-      </div>
-      {coverLoadError && entity.cover_url && value.mode !== 'upload' && value.mode !== 'reset' ? (
+        src={displayedUrl}
+        alt={t('dashboard.coverPreview')}
+        onError={cover.onError}
+      />
+      {cover.error && value.mode !== 'upload' && value.mode !== 'reset' ? (
         <div className="dashboard-asset-feedback dashboard-asset-feedback--inline" role="alert">
           <span>{t('dashboard.assetLoadFailed')}</span>
           <button
             type="button"
-            onClick={() => setCoverRequestVersion((version) => version + 1)}
+            onClick={cover.retry}
           >
             {t('dashboard.retryImage')}
           </button>
@@ -135,7 +91,6 @@ export default function CoverField({
       ) : null}
       <p className="dashboard-project-delete-hint">
         {t('dashboard.coverHint')}
-        {kind === 'maps' ? ` ${t('dashboard.mapCoverHint')}` : ''}
       </p>
       <input
         ref={fileInputRef}
@@ -161,7 +116,7 @@ export default function CoverField({
             onChange({ mode: 'reset' });
           }}
         >
-          {t(kind === 'maps' ? 'dashboard.automaticCover' : 'dashboard.resetCover')}
+          {t('dashboard.resetCover')}
         </button>
       </div>
     </fieldset>

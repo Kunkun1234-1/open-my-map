@@ -12,7 +12,6 @@ import LibraryDialog from './LibraryDialog.jsx';
 import MapCard from './MapCard.jsx';
 import CoverField from './CoverField.jsx';
 import { relativeDate } from './helpers.js';
-import { cardFillEvents } from './card-fill.js';
 
 export default function MapsTable({
   maps,
@@ -359,7 +358,10 @@ export default function MapsTable({
           ) : null}
         </div>
       ) : null}
-      {renderOverview ? renderOverview({ onEdit: openEditor, canEdit, disabled: rowsLocked }) : view === 'grid' ? (
+      {renderOverview ? renderOverview({
+        onEdit: openEditor, canEdit, disabled: rowsLocked,
+        onFavorite: toggleFavorite, onDelete: openDeleteDialog, canDelete,
+      }) : view === 'grid' ? (
         <div className="dashboard-map-grid">
           {maps.map((map, index) => (
             <MapCard
@@ -381,15 +383,12 @@ export default function MapsTable({
               onRestore={() => restore(map)}
               onDelete={() => openDeleteDialog(map)}
               onEdit={() => openEditor(map)}
-              onRefresh={onRefresh}
-              onToast={onToast}
             />
           ))}
           {!trashed && onCreateMap ? (
             <button
               type="button"
-              className="dashboard-create-card dashboard-card-fill"
-              {...cardFillEvents}
+              className="dashboard-create-card"
               disabled={rowsLocked}
               onClick={onCreateMap}
             >
@@ -610,7 +609,14 @@ export default function MapsTable({
                 }
               />
             </label>
-            <CoverField entity={editing} kind="maps" value={coverChange} onChange={setCoverChange} t={t} disabled={busy} />
+            <CoverField
+              entity={editing}
+              kind="maps"
+              value={coverChange}
+              onChange={setCoverChange}
+              t={t}
+              disabled={busy}
+            />
             <footer className="dialog-actions">
               <button
                 type="button"

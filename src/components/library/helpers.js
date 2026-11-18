@@ -1,3 +1,5 @@
+import { DEFAULT_COVER_URLS } from './default-cover-assets.js';
+
 export function relativeDate(value, lang) {
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds)) return '—';
@@ -20,21 +22,14 @@ export function relativeDate(value, lang) {
   return formatter.format(0, 'day');
 }
 
-export function coverStyle(map, index = 0) {
-  const name = `${map.name || ''} ${map.description || ''}`.toLowerCase();
-  let cover = Math.max(0, (Number(map.id) || index + 1) - 1) % 8;
-  if (/coffee|咖啡/.test(name)) cover = 4;
-  else if (/ski|滑雪/.test(name)) cover = 5;
-  else if (/food|美食/.test(name)) cover = 6;
-  else if (/hiking|徒步|登山/.test(name)) cover = 2;
-  else if (/island|海岛/.test(name)) cover = 3;
-  else if (/shanghai|上海/.test(name)) cover = 1;
-  else if (/shenzhen|深圳/.test(name)) cover = 0;
-  return {
-    backgroundImage: `url(/images/cover-${['shenzhen', 'shanghai', 'mountain', 'island', 'coffee', 'ski', 'foodie', 'lake'][cover]}.webp)`,
-    backgroundSize: 'cover',
-    backgroundPosition: 'center',
-  };
+export function defaultCoverUrl(entity, kind) {
+  // Hash the identity rather than the list position so the cover survives sorting and renaming.
+  const identity = `${kind}:${entity.id}`;
+  let hash = 2166136261;
+  for (let index = 0; index < identity.length; index += 1) {
+    hash = Math.imul(hash ^ identity.charCodeAt(index), 16777619);
+  }
+  return DEFAULT_COVER_URLS[(hash >>> 0) % DEFAULT_COVER_URLS.length];
 }
 
 export function canManageMap(map, user) {

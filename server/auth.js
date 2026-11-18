@@ -160,16 +160,60 @@ export function loginWithEmail(email, password, req) {
   return issueSession(user, req);
 }
 
-export function updateProfile(userId, { name }) {
-  const displayName = String(name || '').trim().slice(0, 60);
-  if (!displayName) {
-    const err = new Error('请输入昵称');
+export function updateProfile(userId, input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    const err = new Error('个人资料格式不正确');
     err.status = 400;
     throw err;
   }
-  db.prepare('UPDATE users SET name = ?, display_name = ?, last_seen = ? WHERE id = ?')
-    .run(displayName, displayName, now(), userId);
-  audit('update', 'user', userId, `更新昵称为 ${displayName}`);
+  const user = getUserById(userId);
+  if (!user) {
+    const err = new Error('用户不存在');
+    err.status = 404;
+    throw err;
+  }
+  const has = (key) => Object.prototype.hasOwnProperty.call(input, key);
+  const readText = (key, label, maxLength, { required = false } = {}) => {
+    if (!has(key)) return null;
+    if (typeof input[key] !== 'string') {
+      const err = new Error(`${label}必须是文本`);
+      err.status = 400;
+      throw err;
+    }
+    const value = input[key].trim();
+    if (required && !value) {
+      const err = new Error(`请输入${label}`);
+      err.status = 400;
+      throw err;
+    }
+    if (value.length > maxLength) {
+      const err = new Error(`${label}不能超过 ${maxLength} 个字符`);
+      err.status = 400;
+      throw err;
+    }
+    return value;
+  };
+
+  // Parse every supplied field before writing so a later validation failure cannot partially update the profile.
+  const displayName = readText('name', '昵称', 60, { required: true });
+  const organization = readText('organization', '机构', 120);
+  const researchInterests = readText('researchInterests', '研究兴趣', 500);
+  const nextName = displayName ?? user.name;
+  const nextDisplayName = displayName ?? user.display_name;
+  const nextOrganization = organization ?? user.organization ?? '';
+  const nextResearchInterests = researchInterests ?? user.research_interests ?? '';
+
+  db.prepare(`
+    UPDATE users
+    SET name = ?, display_name = ?, organization = ?, research_interests = ?, last_seen = ?
+    WHERE id = ?
+  `).run(nextName, nextDisplayName, nextOrganization, nextResearchInterests, now(), userId);
+  const changed = [
+    displayName !== null ? '昵称' : null,
+    organization !== null ? '机构' : null,
+    researchInterests !== null ? '研究兴趣' : null,
+  ].filter(Boolean).join('、');
+  audit('update', 'user', userId, `更新个人资料${changed ? `：${changed}` : ''}`);
   return publicUser(getUserById(userId));
 }
 

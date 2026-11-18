@@ -10,8 +10,6 @@ const latitude = (y) => Number(((2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180
 function harness({ reducedMotion = false, zoom = 14 } = {}) {
   const calls = [];
   const frames = new Map();
-  const phases = [];
-  const blends = [];
   let frameId = 0;
   let current = [120, 30];
   let now = 0;
@@ -37,7 +35,6 @@ function harness({ reducedMotion = false, zoom = 14 } = {}) {
     [1, { type: 'Point', overlay: point }],
     [2, { type: 'LineString', overlay: line }],
     [3, { type: 'Polygon', overlay: polygon }],
-    [4, { type: 'Point', overlay: { getPosition: () => [120.5, 30.5] } }],
   ]) };
   const build = new Function('window', 'viewportPadding', 'displayPosition', 'AMAP_MIN_ZOOM', 'AMAP_MAX_ZOOM', `${controllerSource}; return buildController;`)(
     {
@@ -47,15 +44,7 @@ function harness({ reducedMotion = false, zoom = 14 } = {}) {
     }, () => [40, 40, 40, 40], (coordinates) => coordinates, 2, 19,
   );
   const AMap = { Pixel: class { constructor(x, y) { this.x = x; this.y = y; } } };
-  const controller = build(AMap, map, registry, () => {}, {
-    onScenePhase: (phase) => phases.push(phase),
-    captureScene() {
-      const blend = { updates: [], removed: false,
-        update(...args) { this.updates.push(args); }, remove() { this.removed = true; } };
-      blends.push(blend);
-      return blend;
-    },
-  });
+  const controller = build(AMap, map, registry, () => {});
   function frame(at) {
     now = at;
     const pending = [...frames.values()];
@@ -66,7 +55,7 @@ function harness({ reducedMotion = false, zoom = 14 } = {}) {
     for (let count = 0; frames.size && count < 200; count += 1) frame(now + 50);
     assert.equal(frames.size, 0, 'animation terminates');
   }
-  return { controller, calls, line, polygon, registry, frames, phases, blends,
+  return { controller, calls, line, polygon, registry, frames,
     frame, finish, center: () => current, pixel: (position) => map.lngLatToContainer(position),
     fromPixel: (x, y) => map.containerToLngLat({ x, y }) };
 }
@@ -92,98 +81,57 @@ test('explicit jumps and ordinary editor moves retain their existing behavior', 
   ]);
 });
 
-test('nearby targets use a continuous 800ms pan without a cut or overlay', () => {
-  const h = harness();
-  h.controller.focusFeature(4, { drift: true });
-  h.frame(0);
-  const start = [...h.center()];
-  h.frame(400);
-  const midpoint = [...h.center()];
-  h.frame(800);
-  assert.ok(midpoint[0] > start[0] && midpoint[0] < 120.5);
-  assert.deepEqual(h.center(), [120.5, 30.5]);
-  assert.equal(h.blends.length, 0);
-  assert.equal(h.frames.size, 0);
-  assert.equal(h.controller.isFocusMoving(), false);
-  assert.ok(h.calls.every((call) => call[0] === 'center'));
-});
-
-test('far transitions accelerate out, cut once, crossfade for 200ms, and decelerate in', () => {
-  const h = harness();
-  h.controller.focusFeature(1, { drift: true });
-  h.frame(0);
-  h.frame(300);
-  const a = [...h.center()];
-  h.frame(600);
-  const b = [...h.center()];
-  h.frame(900);
-  const c = [...h.center()];
-  assert.ok(c[0] - b[0] > b[0] - a[0], 'outgoing motion accelerates');
-  h.frame(1200);
-  assert.equal(h.blends.length, 1);
-  assert.equal(h.blends[0].updates[0][0], 0);
-  assert.ok(h.center()[0] < 126 && h.center()[0] > 125);
-  h.frame(1300);
-  assert.equal(h.blends[0].updates.at(-1)[0], .5);
-  h.frame(1400);
-  assert.equal(h.blends[0].removed, true);
-  h.frame(1500);
-  const d = [...h.center()];
-  h.frame(1800);
-  const e = [...h.center()];
-  h.frame(2100);
-  const f = [...h.center()];
-  assert.ok(f[0] - e[0] < e[0] - d[0], 'incoming motion decelerates');
-  h.frame(2400);
-  assert.deepEqual(h.center(), [126, 34]);
-  assert.equal(h.blends.length, 1);
-  assert.equal(h.frames.size, 0);
-  assert.equal(h.phases.at(-1), null);
-});
-
-test('outgoing and incoming velocity match in screen space in every direction', () => {
-  for (const [x, y] of [[0, 0], [800, 0], [0, 600], [800, 600], [400, 0], [800, 300]]) {
+test('short and long moves pan through the midpoint, with slow ends and a fast middle', () => {
+  for (const [x, y] of [[700, 200], [3000, 1600], [-1800, -900]]) {
     const h = harness();
     const target = h.fromPixel(x, y);
+    const distance = Math.hypot(x - 400, y - 300);
     h.registry.current.set(5, { type: 'Point', overlay: { getPosition: () => target } });
     h.controller.focusFeature(5, { drift: true });
-    h.frame(0);
-    h.frame(1180);
-    const before = h.pixel(target);
-    h.frame(1190);
-    const departure = h.pixel(target);
-    h.frame(1200);
-    const cut = h.pixel(target);
-    h.frame(1210);
-    const arrival = h.pixel(target);
-    const outgoing = [before.x - departure.x, before.y - departure.y];
-    const incoming = [cut.x - arrival.x, cut.y - arrival.y];
-    close(outgoing, incoming, .01);
-    assert.ok(outgoing[0] * (x - 400) + outgoing[1] * (y - 300) > 0);
-    h.finish();
-    close(h.center(), target);
+    const progress = [];
+    for (let at = 0; h.frames.size && at <= 2400; at += 20) {
+      h.frame(at);
+      const point = h.pixel(target);
+      progress.push(1 - Math.hypot(point.x - 400, point.y - 300) / distance);
+    }
+    const last = progress.length - 1;
+    assert.ok(progress.every((value, i) => !i || value >= progress[i - 1]));
+    assert.ok(progress[1] < .01 && 1 - progress[last - 1] < .01);
+    assert.ok(progress.some((value) => value > .47 && value < .53), 'passes through the middle');
+    const middleStep = Math.floor(last / 2);
+    assert.ok(progress[middleStep] - progress[middleStep - 1] > 10 * progress[1]);
+    assert.ok(progress.every((value, i) => !i || value - progress[i - 1] < .05), 'no jump between frames');
+    assert.deepEqual(h.center(), target);
+    assert.equal(h.frames.size, 0);
+    assert.equal(h.controller.isFocusMoving(), false);
   }
 });
 
-test('rapid forward and reverse selection starts from the current view and removes the old blend', () => {
+test('search destinations settle immediately while ordinary view changes retain animation', () => {
+  const h = harness();
+  h.controller.setView([121.455, 31.249], 16, { immediate: true });
+  assert.deepEqual(h.calls.at(-1), ['zoom-center', 16, [121.455, 31.249], true, 0]);
+  h.controller.setView([114.06, 22.55], 13);
+  assert.deepEqual(h.calls.at(-1), ['zoom-center', 13, [114.06, 22.55], false, 1000]);
+  assert.equal(h.frames.size, 0);
+});
+
+test('rapid reverse selection starts from the current view and cancels the previous destination', () => {
   const h = harness();
   h.controller.focusFeature(1, { drift: true });
   h.frame(0);
-  h.frame(1200);
-  h.frame(1250);
+  h.frame(600);
   const interrupted = [...h.center()];
   h.controller.focusFeature(2, { drift: true });
-  assert.equal(h.blends[0].removed, true);
   assert.equal(h.frames.size, 1);
-  h.frame(1300);
+  h.frame(650);
   close(h.center(), interrupted);
   h.finish();
   assert.deepEqual(h.center(), [114, 33]);
-  assert.equal(h.blends.length, 2);
 });
 
-test('canceling outgoing or incoming motion leaves no late frames, blend, or position reset', () => {
-  for (const time of [600, 1200, 1300, 1700]) {
+test('canceling at any phase leaves no late frames or position reset', () => {
+  for (const time of [100, 600, 1200]) {
     const h = harness();
     h.controller.focusFeature(1, { drift: true });
     h.frame(0);
@@ -193,9 +141,7 @@ test('canceling outgoing or incoming motion leaves no late frames, blend, or pos
     h.frame(4000);
     assert.deepEqual(h.center(), center);
     assert.equal(h.frames.size, 0);
-    assert.ok(h.blends.every((blend) => blend.removed));
     assert.equal(h.controller.isFocusMoving(), false);
-    assert.equal(h.phases.at(-1), null);
   }
 });
 
@@ -210,15 +156,13 @@ test('manual pan interrupts a scene and reduced motion bypasses all scene effect
   reduced.controller.focusFeature(1, { drift: true });
   assert.deepEqual(reduced.calls, [['center', [126, 34], true, 0]]);
   assert.equal(reduced.frames.size, 0);
-  assert.equal(reduced.blends.length, 0);
 });
 
-test('a centered point does not animate or create a directionless flash', () => {
+test('a centered point does not animate', () => {
   const h = harness();
   h.registry.current.set(5, { type: 'Point', overlay: { getPosition: () => [120, 30] } });
   h.controller.focusFeature(5, { drift: true });
   assert.equal(h.frames.size, 0);
-  assert.equal(h.blends.length, 0);
   assert.deepEqual(h.calls, [['center', [120, 30], true, 0]]);
 });
 
@@ -234,15 +178,12 @@ test('points, lines and areas preserve manually chosen zoom levels in both direc
   }
 });
 
-test('a throttled tab resumes with a complete arrival rather than skipping to the endpoint', () => {
+test('a throttled tab settles on the target without leaving pending work', () => {
   const h = harness();
   h.controller.focusFeature(1, { drift: true });
   h.frame(0);
   h.frame(10000);
-  assert.equal(h.controller.isFocusMoving(), true);
-  assert.equal(h.blends[0].updates[0][0], 0);
-  assert.notDeepEqual(h.center(), [126, 34]);
-  h.frame(11200);
   assert.deepEqual(h.center(), [126, 34]);
+  assert.equal(h.controller.isFocusMoving(), false);
   assert.equal(h.frames.size, 0);
 });

@@ -9,13 +9,15 @@ import MarkerStylePopover from './MarkerStylePopover.jsx';
 
 export const COLORS = ['#1a73e8', '#00897b', '#8e24aa', '#e85d4a', '#f9ab00', '#d93025', '#5f6368', '#039be5'];
 
-export default function FeatureCard({ feature, layer, canEdit, busy = false, lang, onClose, onCopyCoordinates, onStyle, onStylePreview, onSave, onMedia, onRoute, onAdjust, onDelete }) {
+export default function FeatureCard({ feature, layer, canEdit, busy = false, lang, onClose, onCopyCoordinates, onStyle, onStylePreview, onSave, onMedia, onDeleteAttachment, onRoute, onAdjust, onDelete }) {
   const [styleOpen, setStyleOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(feature.name);
   const [draftDescription, setDraftDescription] = useState(feature.description || '');
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState('');
+  const [deletingAttachmentId, setDeletingAttachmentId] = useState(null);
+  const [mediaError, setMediaError] = useState('');
   const styleButtonRef = useRef(null);
   const text = (zh, en) => lang === 'en' ? en : zh;
   const isPoint = feature.type === 'Point';
@@ -58,6 +60,20 @@ export default function FeatureCard({ feature, layer, canEdit, busy = false, lan
     }
   };
 
+  const removeAttachment = async (attachment) => {
+    if (!canEdit || busy || deletingAttachmentId !== null || !onDeleteAttachment) return;
+    if (!window.confirm(text(`删除附件“${attachment.original_name}”？`, `Delete attachment “${attachment.original_name}”?`))) return;
+    try {
+      setMediaError('');
+      setDeletingAttachmentId(attachment.id);
+      await onDeleteAttachment(attachment.id, feature.id);
+    } catch (deleteError) {
+      setMediaError(deleteError.message);
+    } finally {
+      setDeletingAttachmentId(null);
+    }
+  };
+
   return (
     <article
       className="my-maps-place-card feature-detail-card"
@@ -86,7 +102,16 @@ export default function FeatureCard({ feature, layer, canEdit, busy = false, lan
             </div>
             <button type="button" className="place-card-close" onClick={onClose} aria-label={isPoint ? '关闭地点详情' : '关闭要素详情'} title="关闭"><X size={21} /></button>
           </header>
-          <FeatureMediaGallery attachments={feature.attachments} featureName={feature.name} compact />
+          <FeatureMediaGallery
+            attachments={feature.attachments}
+            featureName={feature.name}
+            compact
+            editable={canEdit && Boolean(onDeleteAttachment)}
+            deleteDisabled={busy || deletingAttachmentId !== null}
+            deletingId={deletingAttachmentId}
+            onDelete={removeAttachment}
+          />
+          {mediaError ? <p className="feature-card-media-error" role="alert">{mediaError}</p> : null}
           <footer className="place-card-footer">
             {isPoint ? <button type="button" className="place-card-coordinates" onClick={onCopyCoordinates} aria-label={`复制坐标 ${coordinates}`} title="复制坐标">
               <MapPin size={14} /><span>{coordinates}</span>

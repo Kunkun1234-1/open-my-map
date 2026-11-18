@@ -8,9 +8,7 @@ import { nearestRouteSegment, geometryCoordinates, safeStorageBounds, viewportPa
 import { getMarkerIcon, MARKER_ICON_IDS } from './marker-icons.js';
 import { draftShapeGeometry, SHAPE_TOOLS } from './editor/shape-drawing.js';
 import { lineArrowLayout } from './editor/line-direction.js';
-import { createMapSceneBlend } from './map-scene-blend.js';
 import './editor.css';
-import './map-scene-blend.css';
 
 export const AMAP_MIN_ZOOM = 2;
 export const AMAP_MAX_ZOOM = 19;
@@ -256,15 +254,11 @@ function updateFeatureOverlay(record, feature, layer, selected) {
 
 function buildController(AMap, map, registry, reportZoom, options = {}) {
   let focusFrame = null;
-  let focusBlend = null;
   let focusMoving = false;
   const cancelFocusMotion = () => {
     if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
     focusFrame = null;
     focusMoving = false;
-    focusBlend?.remove();
-    focusBlend = null;
-    options.onScenePhase?.(null);
   };
   const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const motion = () => ({ immediately: Boolean(reducedMotion()), duration: reducedMotion() ? 0 : 1000 });
@@ -290,57 +284,18 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
       const y = mercatorY(from[1]) + (mercatorY(to[1]) - mercatorY(from[1])) * progress;
       return [from[0] + delta * progress, (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI];
     };
-    const nearbyTarget = travel <= Math.min(rect.width, rect.height) * .4;
-    const distance = Math.min(32, rect.width / 16, rect.height / 12, travel / 3);
-    const offsetX = dx / travel * distance;
-    const offsetY = dy / travel * distance;
-    const departure = position(map.containerToLngLat(new AMap.Pixel(rect.width / 2 + offsetX, rect.height / 2 + offsetY)));
-    const nearby = position(map.containerToLngLat(new AMap.Pixel(pixel.x - offsetX, pixel.y - offsetY)));
-    const legDuration = 1200;
-    const nearDuration = 800;
-    const blendDuration = 200;
+    const screens = travel / Math.max(1, Math.min(rect.width, rect.height));
+    const duration = Math.min(2200, 950 + 300 * screens);
     let startedAt;
-    let cutAt;
-    let cut = false;
-    let arrived = false;
     focusMoving = true;
-    options.onScenePhase?.(nearbyTarget ? 'near' : 'depart');
     const step = (now) => {
-      if (startedAt === undefined) startedAt = now;
-      const elapsed = now - startedAt;
-      if (nearbyTarget) {
-        const progress = Math.min(1, elapsed / nearDuration);
-        const eased = progress * progress * (3 - 2 * progress);
-        if (progress === 1) focusMoving = false;
-        map.setCenter(progress === 1 ? center : interpolate(start, target, eased), true, 0);
-        if (progress === 1) { cancelFocusMotion(); return; }
-      } else if (elapsed < legDuration) {
-        const progress = elapsed / legDuration;
-        map.setCenter(interpolate(start, departure, progress * progress), true, 0);
-      } else {
-        if (!cut) {
-          cut = true;
-          cutAt = now;
-          focusBlend = options.captureScene?.() || null;
-          options.onScenePhase?.('blend');
-        }
-        // Reset the phase clock at the actual cut: a background/throttled tab
-        // must not skip the arrival animation or flash its final frame.
-        const incoming = now - cutAt;
-        const progress = Math.min(1, incoming / legDuration);
-        const eased = 1 - (1 - progress) ** 2;
-        if (progress === 1) focusMoving = false;
-        map.setCenter(progress === 1 ? center : interpolate(nearby, target, eased), true, 0);
-        if (incoming < blendDuration) {
-          focusBlend?.update(incoming / blendDuration, offsetX * 2 * incoming / legDuration, offsetY * 2 * incoming / legDuration);
-        } else if (!arrived) {
-          focusBlend?.remove();
-          focusBlend = null;
-          arrived = true;
-          options.onScenePhase?.('arrive');
-        }
-        if (progress === 1) { cancelFocusMotion(); return; }
-      }
+      startedAt ??= now;
+      const t = Math.min(1, (now - startedAt) / duration);
+      // Ease continuously from rest through peak speed and back to rest.
+      const eased = t ** 3 * (t * (t * 6 - 15) + 10);
+      if (t === 1) cancelFocusMotion();
+      map.setCenter(t === 1 ? center : interpolate(start, target, eased), true, 0);
+      if (t === 1) return;
       focusFrame = window.requestAnimationFrame(step);
     };
     focusFrame = window.requestAnimationFrame(step);
@@ -375,11 +330,11 @@ function buildController(AMap, map, registry, reportZoom, options = {}) {
       const rect = map.getContainer().getBoundingClientRect();
       return pixel ? { x: rect.left + pixel.x, y: rect.top + pixel.y } : null;
     },
-    setView(coordinates, zoom = map.getZoom()) {
+    setView(coordinates, zoom = map.getZoom(), { immediate = false } = {}) {
       beginMove();
       const position = displayPosition(coordinates);
       const nextZoom = Math.max(AMAP_MIN_ZOOM, Math.min(AMAP_MAX_ZOOM, zoom));
-      const { immediately, duration } = motion();
+      const { immediately, duration } = immediate ? { immediately: true, duration: 0 } : motion();
       map.setZoomAndCenter(nextZoom, position, immediately, duration);
       reportZoom();
     },
@@ -743,11 +698,6 @@ export default function AmapMap({
       };
       controllerRef.current = buildController(AMap, map, overlayRegistryRef, reportZoom, {
         beforeMove: () => { viewSource = 'programmatic'; },
-        captureScene: () => createMapSceneBlend(surfaceRef.current),
-        onScenePhase: (phase) => {
-          if (phase) shell.dataset.focusMotion = phase;
-          else delete shell.dataset.focusMotion;
-        },
       });
 
       markReady = () => {

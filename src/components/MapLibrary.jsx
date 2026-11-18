@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Bell,
   Check,
+  ChevronDown,
   Folder,
   Grid2X2,
   List,
@@ -24,6 +25,7 @@ import LibrarySidebar from './library/LibrarySidebar.jsx';
 import LibrarySortMenu from './library/LibrarySortMenu.jsx';
 import LibraryHero from './library/LibraryHero.jsx';
 import HomeOverview from './library/HomeOverview.jsx';
+import WorkspaceAbout from './library/WorkspaceAbout.jsx';
 import LibraryDialog from './library/LibraryDialog.jsx';
 import MapsTable from './library/MapsTable.jsx';
 import ProjectMembers from './library/ProjectMembers.jsx';
@@ -31,6 +33,7 @@ import ProjectsTable from './library/ProjectsTable.jsx';
 import { relativeDate } from './library/helpers.js';
 import './library/dashboard.css';
 import './library/card-fill.css';
+import './library/workspace-home.css';
 
 const MAP_TABS = new Set(['all', 'created', 'shared', 'favorites', 'trash']);
 
@@ -40,6 +43,9 @@ function readLibraryLocation() {
   }
   const params = new URLSearchParams(window.location.search);
   const requestedSection = params.get('section');
+  if (requestedSection === 'about') {
+    return { section: 'about', projectId: 'all', tab: 'all', view: 'grid' };
+  }
   if (requestedSection === 'projects') {
     return {
       section: 'projects',
@@ -65,23 +71,23 @@ function readLibraryLocation() {
     section: tab === 'trash' ? 'trash' : 'maps',
     projectId,
     tab: projectId === 'all' ? tab : 'all',
-    view: params.get('view') === 'grid' ? 'grid' : 'table',
+    view: params.get('view') === 'list' ? 'table' : 'grid',
   };
 }
 
 function libraryPath(section, projectId = 'all', tab = 'all', view) {
   if (section === 'home') return '/';
+  if (section === 'about') return '/?section=about';
   const params = new URLSearchParams();
   if (section === 'projects') {
     params.set('section', 'projects');
-    if (view === 'table') params.set('view', 'list');
   } else {
     params.set('section', 'maps');
     if (projectId !== 'all') params.set('project', String(projectId));
     const nextTab = section === 'trash' ? 'trash' : tab;
     if (nextTab !== 'all') params.set('tab', nextTab);
-    if (view === 'grid') params.set('view', 'grid');
   }
+  if (view === 'table') params.set('view', 'list');
   return `/?${params.toString()}`;
 }
 
@@ -100,6 +106,12 @@ function isCreatedByUser(map, user) {
 export default function MapLibrary() {
   const { user } = useAuth();
   const { t, lang } = useI18n();
+  const appName = t('common.appName');
+
+  useEffect(() => {
+    document.title = appName;
+  }, [appName]);
+
   const [initialLocation] = useState(readLibraryLocation);
   const [maps, setMaps] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -111,7 +123,7 @@ export default function MapLibrary() {
   const [projectSwitching, setProjectSwitching] = useState(false);
   const [activeTab, setActiveTab] = useState(initialLocation.tab);
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState('modified');
+  const [sort, setSort] = useState({ field: 'modified', direction: 'desc' });
   const [basemapFilter, setBasemapFilter] = useState('all');
   const [filterOpen, setFilterOpen] = useState(false);
   const [mapView, setMapView] = useState(
@@ -188,7 +200,7 @@ export default function MapLibrary() {
   }, [loadLibrary]);
   useEffect(() => {
     const onShortcut = (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      if (searchRef.current && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         searchRef.current?.focus();
       }
@@ -230,6 +242,8 @@ export default function MapLibrary() {
   const canCreateInProject = !selectedProject || editableProjects.some((project) => project.id === selectedProject.id);
   const isTrash = section === 'trash';
   const isProjects = section === 'projects';
+  const isHome = section === 'home';
+  const isAbout = section === 'about';
   const filterTab = isTrash ? 'trash' : activeTab;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = useMemo(() => {
@@ -256,13 +270,14 @@ export default function MapLibrary() {
       if (!isTrash && filterTab === 'shared' && created) return false;
       return true;
     });
-    return result.sort((a, b) =>
-      sort === 'name'
-        ? a.name.localeCompare(b.name, lang)
-        : sort === 'oldest'
-          ? String(a.updated_at).localeCompare(String(b.updated_at))
-          : String(b.updated_at).localeCompare(String(a.updated_at)),
-    );
+    const dateField = sort.field === 'created' ? 'created_at' : 'updated_at';
+    const direction = sort.direction === 'asc' ? 1 : -1;
+    return result.sort((a, b) => {
+      const order = sort.field === 'name'
+        ? a.name.localeCompare(b.name, lang === 'zh' ? 'zh-Hans-u-co-pinyin' : lang)
+        : (Date.parse(a[dateField]) || 0) - (Date.parse(b[dateField]) || 0);
+      return direction * (order || a.id - b.id);
+    });
   }, [
     maps,
     trashedMaps,
@@ -329,7 +344,7 @@ export default function MapLibrary() {
       setSidebarOpen(false);
       setFilterOpen(false);
       setQuery('');
-      setMapView(nextSection === 'home' ? 'grid' : 'table');
+      setMapView('grid');
       if (nextSection === 'home' || nextSection === 'projects') setProjectView('grid');
       navigate(libraryPath(nextSection, 'all', nextTab));
     };
@@ -372,7 +387,7 @@ export default function MapLibrary() {
       const nextProjectId = Number(projectId);
       setSelectedProjectId(nextProjectId);
       setSection('maps');
-      setMapView('table');
+      setMapView('grid');
       setActiveTab('all');
       setQuery('');
       setBasemapFilter('all');
@@ -455,8 +470,30 @@ export default function MapLibrary() {
         ? 'dashboard.emptySharedHint'
         : 'library.noMatchSearch';
 
+  const searchControl = (
+    <div className="dashboard-search">
+      <Search size={16} aria-hidden="true" />
+      <input
+        ref={searchRef}
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder={t(isHome ? 'dashboard.homeSearch' : 'dashboard.search')}
+        aria-label={t(isHome ? 'dashboard.homeSearch' : 'dashboard.search')}
+      />
+      {query ? (
+        <button
+          type="button"
+          onClick={() => setQuery('')}
+          aria-label={t('editor.clearSearch')}
+        >
+          <X size={14} />
+        </button>
+      ) : null}
+    </div>
+  );
+
   return (
-    <main className="dashboard-page">
+    <main className={`dashboard-page${isHome ? ' workspace-home' : ''}`}>
       <LibrarySidebar
         user={user}
         projects={projects}
@@ -465,15 +502,13 @@ export default function MapLibrary() {
         animateProjectSelection={projectSwitching}
         onNavigate={changeSection}
         onProject={chooseProject}
-        onCreateProject={() => openDialog('project')}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        lang={lang}
         t={t}
       />
       <div className="dashboard-content" inert={sidebarOpen}>
-        <header
-          className={`dashboard-topbar${section !== 'home' ? ' on-white' : ''}`}
-        >
+        <header className="dashboard-topbar on-white">
           <button
             className="icon-button dashboard-mobile-menu"
             onClick={() => setSidebarOpen(true)}
@@ -481,26 +516,7 @@ export default function MapLibrary() {
           >
             <Menu size={21} />
           </button>
-          <label className="dashboard-search">
-            <Search size={16} />
-            <input
-              ref={searchRef}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={t('dashboard.search')}
-              aria-label={t('dashboard.search')}
-            />
-            {query ? (
-              <button
-                onClick={() => setQuery('')}
-                aria-label={t('editor.clearSearch')}
-              >
-                <X size={14} />
-              </button>
-            ) : (
-              <kbd>⌘ K</kbd>
-            )}
-          </label>
+          {isAbout ? null : searchControl}
           <div className="dashboard-topbar-actions">
             <div className="dashboard-activity-anchor" ref={activityRef}>
               <button
@@ -548,7 +564,7 @@ export default function MapLibrary() {
             </div>
           </div>
         </header>
-        {section === 'home' ? (
+        {isHome ? (
           <LibraryHero
             user={user}
             onCreateMap={openCreateMap}
@@ -571,10 +587,27 @@ export default function MapLibrary() {
               </button>
             </div>
           ) : null}
-          {section === 'home' ? (
-            <HomeOverview maps={maps} projects={projects} user={user} query={normalizedQuery} loading={loading} lang={lang} t={t} onMap={(mapId) => navigate(`/maps/${mapId}`)} onProject={chooseProject} onMoreMaps={() => changeSection('maps')} onMoreProjects={() => changeSection('projects')} onRefresh={loadLibrary} onToast={setToast} />
+          {isHome ? (
+            <HomeOverview
+              maps={maps}
+              projects={projects}
+              user={user}
+              query={normalizedQuery}
+              loading={loading}
+              lang={lang}
+              t={t}
+              onMap={(mapId) => navigate(`/maps/${mapId}`)}
+              onProject={chooseProject}
+              onMoreMaps={() => changeSection('maps')}
+              onMoreProjects={() => changeSection('projects')}
+              onRefresh={loadLibrary}
+              onToast={setToast}
+            />
           ) : null}
-          {section !== 'home' && !isProjects ? (
+          {isAbout ? (
+            <WorkspaceAbout lang={lang} t={t} onOpenMaps={() => changeSection('maps')} />
+          ) : null}
+          {!isHome && !isProjects && !isAbout ? (
             <section
               key={selectedProjectId}
               className={`dashboard-maps-section${selectedProject && !isTrash ? ' is-project-detail' : ''}`}
@@ -591,10 +624,11 @@ export default function MapLibrary() {
               ) : null}
               <div className="dashboard-section-toolbar">
                 <div className="dashboard-section-heading">
-                  <h2>
-                    {isTrash
+                  <h2 className={!selectedProject || isTrash ? 'dashboard-library-title' : undefined}>
+                    {!selectedProject || isTrash ? <span className="dashboard-title-reserve" aria-hidden="true">{t('dashboard.yourMaps')}</span> : null}
+                    <span>{isTrash
                       ? t('dashboard.trash')
-                      : selectedProject?.name || t('dashboard.yourMaps')}
+                      : selectedProject?.name || t('dashboard.yourMaps')}</span>
                   </h2>
                   {!selectedProject || isTrash ? (
                     <nav
@@ -605,10 +639,11 @@ export default function MapLibrary() {
                         <button
                           key={key}
                           className={filterTab === key ? 'active' : ''}
+                          data-layout-label={label}
                           onClick={() => changeMapTab(key)}
                           aria-pressed={filterTab === key}
                         >
-                          {label}
+                          <span>{label}</span>
                         </button>
                       ))}
                     </nav>
@@ -619,7 +654,12 @@ export default function MapLibrary() {
                     <button type="button" className={mapView === 'grid' ? 'active' : ''} onClick={() => changeMapView('grid')} aria-label={t('dashboard.gridView')} aria-pressed={mapView === 'grid'} title={t('dashboard.gridView')}><Grid2X2 size={15} /></button>
                     <button type="button" className={mapView === 'table' ? 'active' : ''} onClick={() => changeMapView('table')} aria-label={t('dashboard.listView')} aria-pressed={mapView === 'table'} title={t('dashboard.listView')}><List size={16} /></button>
                   </div>
-                  <LibrarySortMenu value={sort} onChange={setSort} t={t} />
+                  <LibrarySortMenu value={sort} onChange={(field) => setSort((current) => ({
+                    field,
+                    direction: field === current.field
+                      ? (current.direction === 'asc' ? 'desc' : 'asc')
+                      : (field === 'name' ? 'asc' : 'desc'),
+                  }))} t={t} />
                   <button
                     className={`dashboard-filter-button${filterOpen ? ' active' : ''}`}
                     onClick={() => setFilterOpen((value) => !value)}
@@ -631,16 +671,16 @@ export default function MapLibrary() {
                       <span className="dashboard-filter-dot" />
                     ) : null}
                   </button>
-                  {!isTrash ? (
                     <button
-                      className="dashboard-primary compact"
+                      className={`dashboard-primary compact${isTrash ? ' dashboard-action-reserve' : ''}`}
                       onClick={openCreateMap}
-                      disabled={!canCreateInProject}
+                      disabled={isTrash || !canCreateInProject}
+                      aria-hidden={isTrash || undefined}
+                      tabIndex={isTrash ? -1 : undefined}
                     >
                       <Plus size={15} />
                       {t('library.createMap')}
                     </button>
-                  ) : null}
                 </div>
               </div>
               {filterOpen ? (
@@ -781,17 +821,17 @@ export default function MapLibrary() {
             </section>
           ) : null}
           {!isTrash && isProjects ? (
-            <section className="dashboard-projects-section">
-              <div className="dashboard-projects-heading">
-                <h2>
-                  {t('dashboard.projects')}
-                </h2>
-                <div className="dashboard-projects-actions">
+            <section className="dashboard-projects-section" aria-label={t('dashboard.yourProjects')}>
+              <div className="dashboard-section-toolbar">
+                <div className="dashboard-section-heading">
+                  <h2>{t('dashboard.yourProjects')}</h2>
+                </div>
+                <div className="dashboard-view-actions">
                   <div className="dashboard-view-toggle" role="group" aria-label={t('dashboard.projectViews')}>
                     <button type="button" className={projectView === 'grid' ? 'active' : ''} onClick={() => changeProjectView('grid')} aria-label={t('dashboard.projectGridView')} aria-pressed={projectView === 'grid'} title={t('dashboard.projectGridView')}><Grid2X2 size={15} /></button>
                     <button type="button" className={projectView === 'table' ? 'active' : ''} onClick={() => changeProjectView('table')} aria-label={t('dashboard.projectListView')} aria-pressed={projectView === 'table'} title={t('dashboard.projectListView')}><List size={16} /></button>
                   </div>
-                  <button className="dashboard-secondary compact" onClick={() => openDialog('project')}><Plus size={15} />{t('library.createProject')}</button>
+                  <button type="button" className="dashboard-primary compact" aria-label={t('library.createProject')} onClick={() => openDialog('project')}><Plus size={15} />{t('library.createProject')}</button>
                 </div>
               </div>
               {!loading && visibleProjects.length === 0 ? (
@@ -904,19 +944,22 @@ export default function MapLibrary() {
                 </label>
                 <label>
                   {t('dashboard.chooseProject')}
-                  <select
-                    aria-label={t('dashboard.chooseProject')}
-                    value={mapForm.projectId}
-                    onChange={(event) =>
-                      setMapForm({ ...mapForm, projectId: event.target.value })
-                    }
-                  >
-                    {editableProjects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                      </option>
-                    ))}
-                  </select>
+                  <span className="dashboard-project-select">
+                    <select
+                      aria-label={t('dashboard.chooseProject')}
+                      value={mapForm.projectId}
+                      onChange={(event) =>
+                        setMapForm({ ...mapForm, projectId: event.target.value })
+                      }
+                    >
+                      {editableProjects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} aria-hidden="true" />
+                  </span>
                 </label>
               </>
             ) : (

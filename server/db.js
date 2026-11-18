@@ -73,6 +73,8 @@ db.exec(`
     name TEXT NOT NULL,
     display_name TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL UNIQUE,
+    organization TEXT NOT NULL DEFAULT '',
+    research_interests TEXT NOT NULL DEFAULT '',
     avatar_url TEXT NOT NULL DEFAULT '',
     avatar_stored_name TEXT,
     home_background_stored_name TEXT,
@@ -197,6 +199,8 @@ const addUserColumn = (name, def) => {
   }
 };
 addUserColumn('display_name', "TEXT NOT NULL DEFAULT ''");
+addUserColumn('organization', "TEXT NOT NULL DEFAULT ''");
+addUserColumn('research_interests', "TEXT NOT NULL DEFAULT ''");
 addUserColumn('avatar_url', "TEXT NOT NULL DEFAULT ''");
 addUserColumn('avatar_stored_name', 'TEXT');
 addUserColumn('home_background_stored_name', 'TEXT');
@@ -730,6 +734,8 @@ export function publicUser(row) {
     name: row.name,
     displayName: row.display_name || row.name,
     email: row.email,
+    organization: row.organization || '',
+    researchInterests: row.research_interests || '',
     role: row.role,
     status: row.status,
     avatarUrl: row.avatar_stored_name
@@ -954,7 +960,7 @@ export function createProjectOwnedBy(user, { name, description = '' }) {
   return listProjects().find((project) => project.id === projectId);
 }
 
-function projectListItem(projectId, actor) {
+export function projectListItem(projectId, actor) {
   const project = listProjects().find((item) => item.id === projectId);
   if (!project) return null;
   const myRole = actor.role === 'admin' ? 'admin' : membershipForProject(actor.id, projectId)?.role;
@@ -1245,13 +1251,10 @@ export function canAccessProject(user, projectId) {
   return Boolean(membershipForProject(user.id, projectId));
 }
 
-// —— 可见性过滤 ——
+// 个人工作空间按项目成员关系筛选；全站管理使用 listProjects / listMaps。
 export function listVisibleProjects(user) {
   const all = listProjects();
   if (!user) return [];
-  if (user.role === 'admin') {
-    return all.map((project) => ({ ...project, my_role: 'admin' }));
-  }
   const memberRows = db.prepare('SELECT project_id, role FROM project_members WHERE user_id = ?').all(user.id);
   const roleByProject = new Map(memberRows.map((row) => [row.project_id, row.role]));
   return all
@@ -1279,14 +1282,13 @@ function visibleMapRows(user, trashed) {
     LEFT JOIN projects p ON p.id = m.project_id
     LEFT JOIN project_members pm ON pm.project_id = m.project_id AND pm.user_id = ?
     WHERE m.deleted_at IS ${trashed ? 'NOT ' : ''}NULL
-      AND (? = 'admin' OR ${trashed ? "pm.role = 'owner'" : 'pm.role IS NOT NULL'})
+      AND ${trashed ? "pm.role = 'owner'" : 'pm.role IS NOT NULL'}
     ORDER BY ${trashed ? 'm.deleted_at' : 'm.updated_at'} DESC, m.id DESC
-  `).all(user.id, user.id, user.role);
+  `).all(user.id, user.id);
   return rows.map((map) => ({
     ...map,
     cover_url: map.cover_stored_name ? `/api/maps/${map.id}/cover?v=${encodeURIComponent(map.cover_stored_name)}` : null,
-    my_role: user.role === 'admin' ? 'admin' : map.my_role,
-    is_owner: user.role === 'admin' || map.owner_user_id === user.id || map.my_role === 'owner',
+    is_owner: map.owner_user_id === user.id || map.my_role === 'owner',
     is_favorite: Boolean(map.is_favorite),
   })).map((map) => {
     delete map.cover_stored_name;

@@ -51,6 +51,8 @@ export default function ProfilePage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [displayName, setDisplayName] = useState(user?.displayName || user?.name || '');
+  const [organization, setOrganization] = useState(user?.organization || '');
+  const [researchInterests, setResearchInterests] = useState(user?.researchInterests || '');
   const [profileBusy, setProfileBusy] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -66,6 +68,11 @@ export default function ProfilePage() {
   useEffect(() => {
     setDisplayName(user?.displayName || user?.name || '');
   }, [user?.displayName, user?.name]);
+
+  useEffect(() => {
+    setOrganization(user?.organization || '');
+    setResearchInterests(user?.researchInterests || '');
+  }, [user?.id, user?.organization, user?.researchInterests]);
 
   useEffect(() => {
     if (!loading && user && window.location.hash === '#home-appearance') {
@@ -148,9 +155,9 @@ export default function ProfilePage() {
     setError('');
     setMessage('');
     try {
-      await api.updateProfile({ name: displayName.trim() });
+      await api.updateProfile({ name: displayName.trim(), organization: organization.trim(), researchInterests: researchInterests.trim() });
       await refresh();
-      setMessage(t('profile.nicknameUpdated'));
+      setMessage(t('profile.profileUpdated'));
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -194,7 +201,9 @@ export default function ProfilePage() {
       <div className="profile-workspace">
         <header className="profile-topbar">
           <button type="button" onClick={() => goBack()}><ArrowLeft size={15} />{t('common.back')}</button>
-          <span className="profile-wordmark">Open My Map</span>
+          <a className="profile-brand" href="/" aria-label={lang === 'zh' ? '地图说首页' : 'Map Talk home'} onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate('/'); } }}>
+            <img src={`/images/map-talk-logo-${lang === 'en' ? 'en' : 'zh'}.svg`} alt={lang === 'zh' ? '地图说' : 'Map Talk'} width="1706" height="481" />
+          </a>
           <LanguageSwitch className="profile-language-switch" />
         </header>
 
@@ -215,7 +224,7 @@ export default function ProfilePage() {
             <section id="profile-details" className="profile-panel">
               <div className="profile-panel-heading"><UserIcon size={20} /><div><h2>{t('profile.title')}</h2><p>{t('profile.profileHint')}</p></div></div>
               <form className="profile-form" onSubmit={onSaveProfile}>
-                <div className="profile-avatar-field" aria-busy={avatarBusy}>
+                <div className="profile-avatar-field profile-form-intro" aria-busy={avatarBusy}>
                   <span className="profile-avatar-label">{t('profile.avatar')}</span>
                   <div className="profile-avatar-editor">
                     <UserAvatar user={user} className="profile-avatar profile-avatar-preview" />
@@ -229,20 +238,26 @@ export default function ProfilePage() {
                   </div>
                   <input ref={avatarInputRef} type="file" hidden accept="image/jpeg,image/png,image/webp,image/gif,image/avif" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) changeAvatar(file); }} />
                 </div>
-                <label className="profile-field"><span>{t('profile.displayName')}</span><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} required /><small>{t('profile.nicknameHint')}</small></label>
-                <label className="profile-field"><span>{t('login.email')}</span><input value={user.email || ''} disabled readOnly /><small>{t('profile.emailHint')}</small></label>
-                <button type="submit" className="profile-primary-button" disabled={profileBusy}>{profileBusy ? t('common.loading') : t('profile.saveProfile')}</button>
+                <div className="profile-details-fields">
+                  <label className="profile-field"><span>{t('profile.displayName')}</span><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} autoComplete="nickname" required /></label>
+                  <label className="profile-field"><span>{t('profile.organization')}</span><input value={organization} onChange={(event) => setOrganization(event.target.value)} maxLength={120} autoComplete="organization" placeholder={t('profile.organizationPlaceholder')} /></label>
+                  <label className="profile-field profile-field-full"><span>{t('login.email')}</span><input value={user.email || ''} disabled readOnly /><small>{t('profile.emailHint')}</small></label>
+                  <label className="profile-field profile-field-full"><span>{t('profile.researchInterests')}</span><textarea value={researchInterests} onChange={(event) => setResearchInterests(event.target.value)} maxLength={500} rows={3} placeholder={t('profile.researchInterestsPlaceholder')} /><small>{t('profile.researchInterestsHint')}</small></label>
+                </div>
+                <div className="profile-form-actions"><button type="submit" className="profile-primary-button" disabled={profileBusy}>{profileBusy ? t('common.loading') : t('profile.saveProfile')}</button></div>
               </form>
             </section>
 
             <section id="profile-security" className="profile-panel">
               <div className="profile-panel-heading"><KeyRound size={20} /><div><h2>{t('profile.changePassword')}</h2><p>{t('profile.securityHint')}</p></div></div>
               <form className="profile-form" onSubmit={onChangePassword}>
-                <PasswordField label={t('profile.currentPassword')} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" visible={passwordVisibility.current} onToggle={() => togglePassword('current')} t={t} />
-                <PasswordField label={t('profile.newPassword')} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" visible={passwordVisibility.next} onToggle={() => togglePassword('next')} t={t} />
-                <PasswordField label={t('profile.confirmPassword')} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" visible={passwordVisibility.confirm} onToggle={() => togglePassword('confirm')} t={t} />
-                <p className="profile-password-hint">{t('profile.passwordHint')}</p>
-                <button type="submit" className="profile-primary-button" disabled={passwordBusy}>{passwordBusy ? t('common.loading') : t('profile.changePassword')}</button>
+                <div className="profile-security-note profile-form-intro"><span className="profile-avatar-label">{t('profile.passwordRequirements')}</span><div><Shield size={22} /><p>{t('profile.passwordHint')}</p></div></div>
+                <div className="profile-security-fields">
+                  <PasswordField label={t('profile.currentPassword')} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" visible={passwordVisibility.current} onToggle={() => togglePassword('current')} t={t} />
+                  <PasswordField label={t('profile.newPassword')} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" visible={passwordVisibility.next} onToggle={() => togglePassword('next')} t={t} />
+                  <PasswordField label={t('profile.confirmPassword')} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" visible={passwordVisibility.confirm} onToggle={() => togglePassword('confirm')} t={t} />
+                </div>
+                <div className="profile-form-actions"><button type="submit" className="profile-primary-button" disabled={passwordBusy}>{passwordBusy ? t('common.loading') : t('profile.changePassword')}</button></div>
               </form>
             </section>
           </div>

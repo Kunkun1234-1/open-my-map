@@ -1,11 +1,10 @@
 import { useRef, useState } from 'react';
-import { Folder, Pencil, Plus, Trash2 } from 'lucide-react';
+import { CalendarDays, Folder, Map, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../api.js';
 import CardCover from './CardCover.jsx';
 import LibraryDialog from './LibraryDialog.jsx';
 import CoverField from './CoverField.jsx';
 import { relativeDate } from './helpers.js';
-import { cardFillEvents } from './card-fill.js';
 
 export default function ProjectsTable({
   projects,
@@ -153,107 +152,52 @@ export default function ProjectsTable({
   };
   return (
     <>
-      {view === 'grid' ? <p className="dashboard-project-table-hint">{t('dashboard.projectCardHint')}</p> : null}
-      {renderOverview ? renderOverview({ onEdit: edit, canEdit: canManage, disabled: busy || refreshing }) : view === 'grid' ? (
-        <div className="dashboard-project-grid">
-          {projects.map((project, index) => {
+      {renderOverview ? renderOverview({
+        onEdit: edit, canEdit: canManage, onDelete: remove, disabled: busy || refreshing,
+      }) : view === 'grid' ? (
+        <div className="dashboard-map-grid">
+          {projects.map((project) => {
             const manageable = canManage(project);
+            const open = () => onOpen(project.id);
+            const name = { name: project.name };
             return (
-              <article
-                key={project.id}
-                className="dashboard-map-card dashboard-project-overview-card dashboard-card-fill"
-                {...cardFillEvents}
-                data-testid={`project-card-${project.id}`}
-              >
-                <div className="dashboard-card-cover">
-                  <CardCover
-                    entity={project}
-                    kind="projects"
-                    index={index}
-                    t={t}
-                    editable={false}
-                    disabled={busy}
-                    onOpen={() => onOpen(project.id)}
-                    openLabel={t('common.open')}
-                    onRefresh={onRefresh}
-                    onToast={onToast}
-                  />
-                </div>
+              <article key={project.id} className="dashboard-map-card" data-testid={`project-card-${project.id}`}>
+                <CardCover entity={project} kind="projects" t={t} disabled={busy}
+                  onOpen={open} openLabel={t('dashboard.openHomeProject', name)} />
                 <div className="dashboard-card-details">
                   <div className="dashboard-card-title-row">
-                    <button
-                      type="button"
-                      className="dashboard-map-title"
-                      title={project.name}
-                      disabled={busy}
-                      onClick={() => onOpen(project.id)}
-                    >
-                      <span
-                        style={{
-                          viewTransitionName: `project-${project.id}`,
-                        }}
-                      >
-                        {project.name}
-                      </span>
+                    <button type="button" className="dashboard-map-title" title={project.name}
+                      disabled={busy} onClick={open} style={{ viewTransitionName: `project-${project.id}` }}>
+                      {project.name}
                     </button>
                   </div>
-                  <p
-                    className="dashboard-card-description"
-                    title={
-                      manageable
-                        ? t('dashboard.doubleClickEdit')
-                        : project.description || ''
-                    }
-                    onDoubleClick={() => edit(project, 'description')}
-                  >
+                  <p className="dashboard-card-description"
+                    title={manageable ? t('dashboard.doubleClickEdit') : project.description}
+                    onDoubleClick={manageable ? () => edit(project, 'description') : undefined}>
                     {project.description || '—'}
                   </p>
-                  <div className="dashboard-card-meta">
-                    <span>
-                      <Folder size={11} />
-                      {t('dashboard.mapCount', {
-                        n: project.map_count || 0,
-                      })}
-                    </span>
-                    <span title={project.updated_at}>
-                      {t('dashboard.modified', {
-                        date: relativeDate(project.updated_at, lang),
-                      })}
-                    </span>
-                  </div>
-                  <div className="dashboard-project-row-actions">
-                    <button
-                      type="button"
-                      className="dashboard-action-icon"
-                      disabled={!manageable || busy}
-                      title={
-                        !manageable
-                          ? t('dashboard.projectOwnerOnly')
-                          : t('dashboard.editProject')
-                      }
-                      aria-label={t('dashboard.editProjectNamed', {
-                        name: project.name,
-                      })}
-                      onClick={() => edit(project)}
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className="dashboard-action-icon danger"
-                      disabled={!manageable || busy}
-                      title={
-                        !manageable
-                          ? t('dashboard.projectOwnerOnly')
-                          : t('dashboard.deleteProject')
-                      }
-                      aria-label={t('dashboard.deleteProjectNamed', {
-                        name: project.name,
-                      })}
-                      onClick={() => remove(project)}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                  <div className="dashboard-card-footer">
+                    <div className="dashboard-card-meta">
+                      <span><Map size={11} />{t('dashboard.mapCount', { n: project.map_count || 0 })}</span>
+                      <span title={project.updated_at}>
+                        <CalendarDays size={11} />
+                        {t('dashboard.modified', { date: relativeDate(project.updated_at, lang) })}
+                      </span>
+                    </div>
+                    <div className="dashboard-card-actions">
+                      <button type="button" disabled={busy || !manageable}
+                        aria-label={t('dashboard.editProjectNamed', name)}
+                        title={t(manageable ? 'dashboard.editProject' : 'dashboard.projectOwnerOnly')}
+                        onClick={() => edit(project)}>
+                        <Pencil size={14} />
+                      </button>
+                      <button type="button" className="danger" disabled={busy || !manageable}
+                        aria-label={t('dashboard.deleteProjectNamed', name)}
+                        title={t(manageable ? 'dashboard.deleteProject' : 'dashboard.projectOwnerOnly')}
+                        onClick={() => remove(project)}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </article>
@@ -262,14 +206,11 @@ export default function ProjectsTable({
           {onCreateProject ? (
             <button
               type="button"
-              className="dashboard-create-card dashboard-card-fill"
-              {...cardFillEvents}
+              className="dashboard-create-card"
               disabled={busy}
               onClick={onCreateProject}
             >
-              <span>
-                <Plus size={26} strokeWidth={1.5} />
-              </span>
+              <span><Plus size={26} strokeWidth={1.5} aria-hidden="true" /></span>
               <strong>{t('library.createProject')}</strong>
               <small>{t('dashboard.emptyProjectsHint')}</small>
             </button>

@@ -2,21 +2,18 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  border: 1px solid rgb(255 255 255 / 55%);
-  border-radius: 6px;
-  background: rgb(26 35 49 / 86%);
-  color: #fff;
+  border: 1px solid var(--paper-outline);
+  background: var(--paper-raised);
+  color: var(--paper-ink);
   font-size: 10px;
   line-height: 1.35;
-  box-shadow: 0 2px 9px rgb(18 27 40 / 18%);
 }
 
 .dashboard-asset-feedback button {
   min-height: 24px;
   border: 0;
-  border-radius: 4px;
   padding: 2px 7px;
-  background: rgb(255 255 255 / 16%);
+  background: var(--paper-hover);
   color: inherit;
   font: inherit;
   font-weight: 600;
@@ -24,11 +21,11 @@
 }
 
 .dashboard-asset-feedback button:hover:not(:disabled) {
-  background: rgb(255 255 255 / 26%);
+  background: var(--paper-selected);
 }
 
 .dashboard-asset-feedback button:focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--paper-ink);
   outline-offset: 2px;
 }
 
@@ -44,10 +41,9 @@
 .dashboard-asset-feedback--inline {
   margin: -2px 0 9px;
   padding: 5px 6px 5px 9px;
-  background: #fff4f2;
-  border-color: #f2c8c2;
-  color: #8c3129;
-  box-shadow: none;
+  background: var(--paper-danger-soft);
+  border-color: var(--paper-danger);
+  color: var(--paper-danger);
 }
 
 .dashboard-asset-feedback--inline button {
@@ -59,7 +55,7 @@
 }
 
 .dashboard-asset-feedback--inline button:focus-visible {
-  outline-color: #8c3129;
+  outline-color: var(--paper-danger);
 }
 
 .dashboard-asset-feedback--hero {

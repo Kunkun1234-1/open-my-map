@@ -4,10 +4,10 @@
   max-height: min(320px, calc(100dvh - 16px));
   padding: 6px 0;
   overflow-y: auto;
-  border: 1px solid #c9cdd1;
+  border: 1px solid var(--paper-rule);
   border-radius: 0;
-  background: #fff;
-  box-shadow: 0 2px 7px rgb(60 64 67 / 28%);
+  background: var(--paper-raised);
+  box-shadow: none;
 }
 
 .reference-layer-menu.layer-panel-menu > button {
@@ -18,7 +18,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: #303134;
+  color: var(--paper-ink);
   font-size: 14px;
   font-weight: 400;
   line-height: 32px;
@@ -28,17 +28,21 @@
 
 .reference-layer-menu.layer-panel-menu > button:hover:not(:disabled),
 .reference-layer-menu.layer-panel-menu > button:focus-visible {
-  outline: 0;
-  background: #f1f3f4;
+  background: var(--paper-hover);
+}
+
+.reference-layer-menu.layer-panel-menu > button:focus-visible {
+  outline: 2px solid var(--paper-ink);
+  outline-offset: -2px;
 }
 
 .reference-layer-menu.layer-panel-menu > button:disabled {
-  color: #bdc1c6;
+  color: var(--paper-outline);
   background: transparent;
 }
 
 .reference-layer-menu-separator {
   height: 1px;
   margin: 5px 0;
-  background: #e0e0e0;
+  background: var(--paper-rule);
 }

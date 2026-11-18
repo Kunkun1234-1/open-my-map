@@ -1,14 +1,14 @@
 .editor-page .editor-sidebar .layer-list.enhanced-layer-list {
   min-width: 0;
   padding: 0 0 12px;
-  background: #fff;
+  background: var(--paper-raised);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-section {
   position: relative;
   padding: 4px 0 8px;
-  border-bottom: 1px solid #e3e6e8;
-  background: #fff;
+  border-bottom: 1px solid var(--paper-rule);
+  background: var(--paper-raised);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-section.selected::before {
@@ -30,14 +30,14 @@
   width: 16px;
   height: 16px;
   margin: 0;
-  accent-color: #1a73e8;
+  accent-color: var(--paper-ink);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-name {
   grid-column: 2;
   min-width: 0;
   padding: 5px 27px 5px 1px;
-  color: #202124;
+  color: var(--paper-ink);
   font-size: 14px;
   font-weight: 500;
   line-height: 1.25;
@@ -53,7 +53,7 @@
 .editor-page .editor-sidebar .layer-list .layer-menu-anchor > .icon-button {
   width: 30px;
   height: 30px;
-  color: #70757a;
+  color: var(--paper-muted);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-drag-handle,
@@ -93,8 +93,8 @@
 }
 
 .editor-page .editor-sidebar .is-layer-reordering > .is-layer-drag-source {
-  background: #f1f3f4;
-  outline: 1px dashed #9aa0a6;
+  background: var(--paper-hover);
+  outline: 1px dashed var(--paper-outline);
   outline-offset: -3px;
 }
 
@@ -111,10 +111,10 @@
   height: auto;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid #dadce0;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 12px 30px #20212430;
+  border: 1px solid var(--paper-rule);
+  border-radius: 0;
+  background: var(--paper-raised);
+  box-shadow: none;
   pointer-events: none;
   will-change: transform;
 }
@@ -150,7 +150,7 @@
   right: 45px;
   width: 24px;
   height: 28px;
-  color: #70757a;
+  color: var(--paper-muted);
 }
 
 .editor-page .editor-sidebar .layer-list .enhanced-layer-header:hover .layer-drag-handle,
@@ -162,8 +162,8 @@
 
 .editor-page .editor-sidebar .layer-list .layer-expand:hover,
 .editor-page .editor-sidebar .layer-list .layer-menu-anchor > .icon-button:hover {
-  color: #1a73e8;
-  background: #e8f0fe;
+  color: var(--paper-ink);
+  background: var(--paper-hover);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-body {
@@ -176,20 +176,20 @@
   height: 28px;
   padding: 0 12px;
   gap: 6px;
-  border-radius: 4px;
-  color: #1a73e8;
+  border-radius: 0;
+  color: var(--paper-ink);
   font-size: 12px;
   font-weight: 500;
   line-height: 1;
 }
 
 .editor-page .editor-sidebar .layer-list .layer-style-row:hover:not(:disabled) {
-  background: #f1f3f4;
+  background: var(--paper-hover);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-style-row:focus-visible {
   background: transparent;
-  outline: 2px solid #9aa0a6;
+  outline: 2px solid var(--paper-outline);
   outline-offset: -2px;
 }
 
@@ -199,25 +199,25 @@
   align-items: center;
   min-height: 28px;
   padding: 0;
-  border-radius: 4px;
+  border-radius: 0;
 }
 
 .editor-page .editor-sidebar .layer-list .enhanced-feature-row:hover {
-  background: #f1f3f4;
+  background: var(--paper-hover);
 }
 
 .editor-page .editor-sidebar .layer-list .enhanced-feature-row.active {
-  background: transparent;
+  background: var(--paper-selected);
   box-shadow: none;
 }
 
 .editor-page .editor-sidebar .layer-list .enhanced-feature-row.active:hover {
-  background: #f1f3f4;
+  background: var(--paper-selected);
 }
 
 .editor-page .editor-sidebar .layer-list .enhanced-feature-row .feature-grip {
   width: 12px;
-  color: #9aa0a6;
+  color: var(--paper-muted);
   opacity: 0;
   transition: opacity 100ms ease;
 }
@@ -231,7 +231,7 @@
 .editor-page .editor-sidebar .layer-list .feature-name {
   min-width: 0;
   padding: 4px 2px;
-  color: #3c4043;
+  color: var(--paper-ink);
   font-size: 14px;
   font-weight: 400;
   line-height: 20px;
@@ -242,7 +242,7 @@
 .editor-page .editor-sidebar .layer-list .feature-order-button {
   width: 22px;
   height: 24px;
-  color: #70757a;
+  color: var(--paper-muted);
   opacity: 0;
   transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
 }
@@ -261,8 +261,8 @@
 .editor-page .editor-sidebar .layer-list .mini-style-button:hover,
 .editor-page .editor-sidebar .layer-list .feature-order-button:hover,
 .editor-page .editor-sidebar .layer-list .feature-order-button[aria-expanded="true"] {
-  color: #1a73e8;
-  background: #dce8fc;
+  color: var(--paper-ink);
+  background: var(--paper-selected);
 }
 
 .editor-page .editor-sidebar .layer-list .feature-order-anchor {
@@ -272,7 +272,7 @@
 
 .editor-page .editor-sidebar .layer-list .empty-layer-tip {
   margin: 2px 4px 4px;
-  color: #80868b;
+  color: var(--paper-muted);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-section.is-hidden .layer-name,
@@ -283,7 +283,7 @@
 
 .editor-page .editor-sidebar .layer-list .layer-kind-directions .directions-layer-icon {
   flex: 0 0 auto;
-  color: #1a73e8;
+  color: var(--paper-ink);
 }
 
 .editor-page .editor-sidebar .layer-list .layer-kind-directions .directions-layer-name {
